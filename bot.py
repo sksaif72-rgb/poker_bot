@@ -1,12 +1,11 @@
 import os
 import random
 import datetime
-import pytz
 import psycopg2
 import threading
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from collections import Counter, defaultdict
+from collections import Counter
 
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -35,7 +34,7 @@ def run_server():
     server.serve_forever()
 
 
-# ================= LIMIT =================
+# ================= SUBSCRIPTION =================
 
 def get_subscription_days(user_id):
 
@@ -51,66 +50,13 @@ def get_subscription_days(user_id):
     if not data:
         return 0
 
-    return max(0,(data[0].date()-datetime.date.today()).days)
-
-
-def check_daily_limit(user_id):
-
-    if get_subscription_days(user_id)>30:
-        return True
-
-    conn=get_conn()
-    cur=conn.cursor()
-
-    today=datetime.date.today()
-
-    cur.execute(
-        "SELECT count FROM daily_usage WHERE telegram_id=%s AND usage_date=%s",
-        (user_id,today)
-    )
-
-    r=cur.fetchone()
-
-    cur.close()
-    conn.close()
-
-    count=r[0] if r else 0
-
-    return count<50
-
-
-def increment_daily(user_id):
-
-    conn=get_conn()
-    cur=conn.cursor()
-
-    today=datetime.date.today()
-
-    cur.execute("""
-    INSERT INTO daily_usage (telegram_id,usage_date,count)
-    VALUES (%s,%s,1)
-    ON CONFLICT (telegram_id,usage_date)
-    DO UPDATE SET count=daily_usage.count+1
-    """,(user_id,today))
-
-    conn.commit()
-
-    cur.close()
-    conn.close()
+    days=(data[0].date()-datetime.date.today()).days
+    return max(days,0)
 
 
 def check_subscription(user_id):
 
-    conn=get_conn()
-    cur=conn.cursor()
-
-    cur.execute("SELECT expire_date FROM users WHERE telegram_id=%s",(user_id,))
-    d=cur.fetchone()
-
-    cur.close()
-    conn.close()
-
-    return d and datetime.datetime.now()<d[0]
+    return get_subscription_days(user_id)>0
 
 
 # ================= LOAD DATA =================
@@ -253,18 +199,16 @@ def top3(counter):
 
 # ================= SAVE =================
 
-def save_round(rank,suit,previous,winner,hand,source):
+def save_round(rank,suit,previous,winner):
 
     conn=get_conn()
     cur=conn.cursor()
 
-    minute=datetime.datetime.now().minute
-
     cur.execute("""
     INSERT INTO training_data
-    (card_rank,card_suit,previous_winner_type,winner_type,hand_type,minute,source)
-    VALUES (%s,%s,%s,%s,%s,%s,%s)
-    """,(rank,suit,previous,winner,hand,minute,source))
+    (card_rank,card_suit,previous_winner_type,winner_type)
+    VALUES (%s,%s,%s,%s)
+    """,(rank,suit,previous,winner))
 
     conn.commit()
 
@@ -276,7 +220,7 @@ def save_round(rank,suit,previous,winner,hand,source):
 
 async def start(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
-    kb=[["👤 اشتراك"],["🎓 مدرب"],["🔙 رجوع"]]
+    kb=[["👤 اشتراك"],["🎓 مدرب"]]
 
     await update.message.reply_text(
         "اهلا وسهلا بوت تكساس ويبلاي ♠️",
@@ -292,16 +236,92 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
     user_id=update.message.from_user.id
 
 
-    if text in ["🔙 رجوع","رجوع"]:
+# ===== اختيار نوع الحساب =====
 
-        context.user_data.clear()
-        await start(update,context)
+    if text=="👤 اشتراك":
+
+        context.user_data["role"]="user"
+        context.user_data["step"]="code"
+
+        await update.message.reply_text("أرسل كود الاشتراك")
         return
 
 
-# ================= USER PREDICT =================
+    if text=="🎓 مدرب":
+
+        context.user_data["role"]="trainer"
+        context.user_data["step"]="code"
+
+        await update.message.reply_text("أرسل كود المدرب")
+        return
+
+
+# ===== إدخال الكود =====
+
+    if context.user_data.get("step")=="code":
+
+        role=context.user_data["role"]
+        code=text
+
+        conn=get_conn()
+        cur=conn.cursor()
+
+        table="user_codes" if role=="user" else "trainer_codes"
+
+        cur.execute(f"SELECT days FROM {table} WHERE code=%s",(code,))
+        r=cur.fetchone()
+
+        if not r:
+
+            await update.message.reply_text("الكود غير صحيح")
+            return
+
+        days=r[0]
+
+        expire=datetime.datetime.now()+datetime.timedelta(days=days)
+
+        cur.execute("""
+        INSERT INTO users (telegram_id,expire_date)
+        VALUES (%s,%s)
+        ON CONFLICT (telegram_id)
+        DO UPDATE SET expire_date=%s
+        """,(user_id,expire,expire))
+
+        conn.commit()
+
+        cur.close()
+        conn.close()
+
+        kb=[["🔮 التخمين"],["📅 ايام الاشتراك"],["🔙 رجوع"]]
+
+        await update.message.reply_text(
+            f"تم التفعيل {days} يوم",
+            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+        )
+
+        context.user_data.clear()
+
+        return
+
+
+# ===== عرض الاشتراك =====
+
+    if text=="📅 ايام الاشتراك":
+
+        days=get_subscription_days(user_id)
+
+        await update.message.reply_text(f"متبقي {days} يوم")
+        return
+
+
+# ===== التخمين =====
 
     if text=="🔮 التخمين":
+
+        if not check_subscription(user_id):
+
+            await update.message.reply_text("انتهى الاشتراك")
+            return
 
         context.user_data["step"]="previous"
 
@@ -360,9 +380,9 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("لا توجد بيانات كافية")
             return
 
-        msg="🔮 تحليل الطاولة\n\n"
-
         labels=["🔥 افضل تخمين","⚖️ تخمين وسط","⚠️ تخمين ضعيف"]
+
+        msg="🔮 تحليل الطاولة\n\n"
 
         for i,(name,prob) in enumerate(top):
 
@@ -372,15 +392,14 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
         context.user_data["rank"]=rank
         context.user_data["suit"]=suit
+        context.user_data["step"]="result"
 
         kb=[["زوجين","متتالية"],["ثلاثة","فل هاوس"],["اربعة"]]
 
         await update.message.reply_text(
-            "⚠️ مهم\nاختر الضربة الي ضربت صح",
+            "⚠️ اختر الضربة الصحيحة",
             reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
         )
-
-        context.user_data["step"]="result"
 
         return
 
@@ -390,18 +409,18 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
         rank=context.user_data["rank"]
         suit=context.user_data["suit"]
         previous=context.user_data["previous"]
+
         winner=text
 
-        save_round(rank,suit,previous,winner,[], "user")
+        save_round(rank,suit,previous,winner)
 
         context.user_data["previous"]=winner
-
         context.user_data["step"]="rank"
 
         kb=[["A","K","Q","J"],["10","9","8","7"],["6","5","4","3","2"]]
 
         await update.message.reply_text(
-            "الجولة التالية\nاختر رقم الورقة",
+            "الجولة التالية اختر رقم الورقة",
             reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
         )
 
