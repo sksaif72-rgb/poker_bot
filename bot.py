@@ -83,7 +83,7 @@ def check_subscription(user_id):
     return data and datetime.datetime.now() < data[0]
 
 
-# ==================== AI (ذكي جداً) ====================
+# ==================== AI ====================
 def database_prediction(rank, suit, previous_winner="none"):
     tz = pytz.timezone("Asia/Riyadh")
     hour = datetime.datetime.now(tz).hour
@@ -132,48 +132,40 @@ def top_predictions(counter):
     return [(name, round(val/total*100, 2)) for name, val in counter.most_common(2)]
 
 
-# ==================== START (ترحيب تجاري دافئ) ====================
+# ==================== START (تعديل 1) ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [["👤 اشتراك"], ["🎓 مدرب"], ["🔙 رجوع"]]
     await update.message.reply_text(
-        "مرحباً بك عزيزي العميل ♠️\n\n"
-        "أهلاً وسهلاً في **بوت تخمين البوكر الاحترافي**.\n"
+        "اهلا وسهلا بوت تكساس ويبلاي ♠️\n\n"
         "نحن هنا لنساعدك على اتخاذ قرارات أقوى في اللعب.\n\n"
         "اختر نوع الحساب لنبدأ معاً:",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
 
 
-# ==================== MESSAGE HANDLER (كامل جداً) ====================
+# ==================== MESSAGE HANDLER ====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user_id = update.message.from_user.id
 
-    # ───── زر الرجوع في أي خطوة ─────
     if text in ["🔙 رجوع", "رجوع", "BACK"]:
         context.user_data.clear()
         await start(update, context)
         return
 
-    # ───── اشتراك ─────
+    # اشتراك
     if text in ["👤 اشتراك", "اشتراك"]:
         context.user_data["role"] = "user"
-        await update.message.reply_text(
-            "شكراً لثقتك عزيزي العميل ❤️\n\n"
-            "يرجى إرسال كود الاشتراك الآن:"
-        )
+        await update.message.reply_text("يرجى إرسال كود الاشتراك الآن:")
         return
 
-    # ───── مدرب ─────
+    # مدرب
     if text in ["🎓 مدرب", "مدرب"]:
         context.user_data["role"] = "trainer"
-        await update.message.reply_text(
-            "مرحباً بك أستاذنا المدرب 👨‍🏫\n\n"
-            "يرجى إرسال كود المدرب الآن:"
-        )
+        await update.message.reply_text("يرجى إرسال كود المدرب الآن:")
         return
 
-    # ───── تفعيل الكود ─────
+    # تفعيل الكود
     role = context.user_data.get("role")
     if role:
         code = text
@@ -192,99 +184,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ON CONFLICT (telegram_id) DO UPDATE SET expire_date = %s
             """, (user_id, role, expire, expire))
             conn.commit()
-
             kb = [["🔮 التخمين"]] if role == "user" else [["🎯 تدريب"]]
-            await update.message.reply_text(
-                f"🎉 مبروك! تم تفعيل اشتراكك بنجاح لمدة {days} يوم.\n"
-                "نحن سعداء بخدمتك ونتمنى لك تجربة ممتعة ومربحة.",
-                reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
-            )
+            await update.message.reply_text(f"مبروك! تم تفعيل اشتراكك لمدة {days} يوم.", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
             context.user_data.clear()
         else:
-            await update.message.reply_text("عذراً، الكود غير صحيح ❌\nيرجى المحاولة مرة أخرى أو التواصل مع الدعم.")
+            await update.message.reply_text("الكود غير صحيح.")
         cursor.close()
         conn.close()
         return
 
-    # ───── التدريب (للمدرب) ─────
-    if text in ["🎯 تدريب", "تدريب"]:
-        context.user_data.clear()
-        context.user_data["flow"] = "training"
-        context.user_data["training_step"] = "rank"
-        kb = [["A","K","Q","J"], ["10","9","8","7"], ["6","5","4","3","2"], ["🔙 رجوع"]]
-        await update.message.reply_text("اختر رقم الورقة عزيزي المدرب:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
-        return
-
-    if context.user_data.get("training_step") == "rank":
-        context.user_data["rank"] = text
-        context.user_data["training_step"] = "suit"
-        kb = [["♠️","♥️"], ["♦️","♣️"], ["🔙 رجوع"]]
-        await update.message.reply_text("اختر نوع الورقة:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
-        return
-
-    if context.user_data.get("training_step") == "suit":
-        context.user_data["suit"] = text
-        context.user_data["training_step"] = "winner"
-        kb = [["زوجين","متتالية"], ["فل هاوس","ثلاثة"], ["اربعة"], ["🔙 رجوع"]]
-        await update.message.reply_text("ما الذي ضرب في هذه الجولة؟", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
-        return
-
-    if context.user_data.get("training_step") == "winner":
-        context.user_data["winner"] = text
-        context.user_data["training_step"] = "hand"
-        context.user_data["hands"] = []
-        kb = [["متتالية نفس النوع","زوج"], ["دبل AA","ولا شيء"], ["✅ تم"], ["🔙 رجوع"]]
-        await update.message.reply_text("اختر نوع أوراق اليد (يمكن أكثر من واحد ثم اضغط تم):", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
-        return
-
-    if context.user_data.get("training_step") == "hand":
-        if text == "✅ تم":
-            rank = context.user_data["rank"]
-            suit = context.user_data["suit"]
-            winner = context.user_data["winner"]
-            hands = context.user_data["hands"]
-
-            conn = get_conn()
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO training_data 
-                (card_rank, card_suit, previous_hit, minute, winner_type, hand_type, previous_winner_type, source)
-                VALUES (%s, %s, 'false', %s, %s, %s, 'none', 'trainer')
-            """, (rank, suit, datetime.datetime.now().hour, winner, hands))
-            conn.commit()
-            cursor.close()
-            conn.close()
-
-            await update.message.reply_text("✅ تم حفظ التدريب بنجاح.\nشكراً لمساهمتك في تطوير البوت!")
-            context.user_data.clear()
-            kb = [["🎯 تدريب"], ["🔙 رجوع"]]
-            await update.message.reply_text("اختر اللي تبغاه:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
-            return
-        else:
-            context.user_data["hands"].append(text)
-            await update.message.reply_text(f"تم إضافة: {text}")
-            return
-
-    # ───── التخمين (للمستخدم) ─────
+    # ==================== التخمين (التعديلات 2 و 4) ====================
     if text in ["🔮 التخمين", "تخمين"]:
-        if not check_subscription(user_id):
-            await update.message.reply_text("عذراً، اشتراكك منتهي.\nيرجى تجديد الاشتراك للاستمرار.")
-            return
-        if not check_daily_limit(user_id):
-            await update.message.reply_text("عذراً، وصلت الحد اليومي (50 تخمين).\nحاول غداً أو اشترك في الباقة غير المحدودة.")
+        if not check_subscription(user_id) or not check_daily_limit(user_id):
             return
 
         context.user_data.clear()
         context.user_data["flow"] = "predict"
-        context.user_data["predict_step"] = "winner_type"
-        kb = [["زوجين", "متتالية"], ["فل هاوس", "ثلاثة"], ["اربعة"], ["🔙 رجوع"]]
-        await update.message.reply_text("اختر نوع الضربة المتوقعة عزيزي العميل:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+
+        # إذا كان هناك ضربة سابقة محفوظة → ننتقل مباشرة للرقم والنوع (تعديل 4)
+        if "last_real_winner" in context.user_data:
+            context.user_data["previous_winner"] = context.user_data["last_real_winner"]
+            context.user_data["predict_step"] = "rank"
+            kb = [["A","K","Q","J"], ["10","9","8","7"], ["6","5","4","3","2"], ["🔙 رجوع"]]
+            await update.message.reply_text("اختر رقم الورقة:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+        else:
+            context.user_data["predict_step"] = "previous_winner"
+            kb = [["زوجين","متتالية"], ["فل هاوس","ثلاثة"], ["اربعة"], ["🔙 رجوع"]]
+            await update.message.reply_text("شنو كانت آخر ضربة؟", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
         return
 
     step = context.user_data.get("predict_step")
 
-    if step == "winner_type":
-        context.user_data["winner_type"] = text
+    if step == "previous_winner":
+        context.user_data["previous_winner"] = text
         context.user_data["predict_step"] = "rank"
         kb = [["A","K","Q","J"], ["10","9","8","7"], ["6","5","4","3","2"], ["🔙 رجوع"]]
         await update.message.reply_text("اختر رقم الورقة:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
@@ -300,7 +232,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if step == "suit":
         rank = context.user_data["rank"]
         suit = text
-        prev = context.user_data.get("winner_type", "none")
+        prev = context.user_data.get("previous_winner", "none")
 
         db_w, db_h, db_count = database_prediction(rank, suit, prev)
         mc_w, mc_h = monte_carlo_prediction()
@@ -309,24 +241,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         winners = top_predictions(final_w)
         hands = top_predictions(final_h)
 
-        msg = f"🔮 **نتيجة التخمين**\n\n**نوع الضربة:**\n"
+        msg = "🔮 **نتيجة التخمين**\n\n**نوع الضربة:**\n"
         for w, p in winners: msg += f"• {w} : {p}%\n"
         msg += "\n**نوع اليد:**\n"
         for h, p in hands: msg += f"• {h} : {p}%\n"
 
         await update.message.reply_text(msg, parse_mode="Markdown")
 
-        # التنبيه القوي التجاري
-        warning = (
-            "⚠️ **تحذير مهم جداً** ⚠️\n\n"
-            "إذا أدخلت معلومة غير صحيحة الآن، قد يؤثر ذلك على دقة التخمينات المستقبلية.\n"
-            "يرجى التأكد من الإجابة بكل صدق ودقة 100%.\n\n"
-            "شنو كانت الضربة الحقيقية في هذه الجولة؟"
+        # تحذير قصير (تعديل 3)
+        await update.message.reply_text(
+            "⚠️ **تحذير مهم**: إذا دخلت معلومة غير صحيحة فالبوت تخرب عندك.\n\n"
+            "شنو كانت الضربة الحقيقية في هذه الجولة؟",
+            reply_markup=ReplyKeyboardMarkup([["زوجين","متتالية"], ["فل هاوس","ثلاثة"], ["اربعة"], ["🔙 رجوع"]], resize_keyboard=True)
         )
-        kb = [["زوجين","متتالية"], ["فل هاوس","ثلاثة"], ["اربعة"], ["🔙 رجوع"]]
-        await update.message.reply_text(warning, reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
         context.user_data["predict_step"] = "real_winner"
-        context.user_data["rank"] = rank
         context.user_data["suit"] = suit
         return
 
@@ -334,33 +262,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         real_winner = text
         rank = context.user_data["rank"]
         suit = context.user_data["suit"]
-        prev = context.user_data.get("winner_type", "none")
 
+        # حفظ الضربة + حفظها كآخر ضربة للجولة القادمة
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO training_data 
             (card_rank, card_suit, previous_hit, minute, winner_type, hand_type, previous_winner_type, source)
             VALUES (%s, %s, 'false', %s, %s, %s, %s, 'user')
-        """, (rank, suit, datetime.datetime.now().hour, real_winner, [], prev))
+        """, (rank, suit, datetime.datetime.now().hour, real_winner, [], context.user_data.get("previous_winner", "none")))
         conn.commit()
         cursor.close()
         conn.close()
 
         increment_daily_count(user_id)
 
-        await update.message.reply_text(
-            "✅ شكراً لك عزيزي العميل!\n"
-            "تم حفظ النتيجة الحقيقية بنجاح.\n"
-            "البوت أصبح أذكى بفضلك ❤️"
-        )
+        # حفظ آخر ضربة للجولة التالية (تعديل 4)
+        context.user_data["last_real_winner"] = real_winner
+
+        await update.message.reply_text("شكرا لك! ✅ تم حفظ النتيجة الحقيقية.")
         context.user_data.clear()
+
         kb = [["🔮 التخمين"], ["🔙 رجوع"]]
         await update.message.reply_text("اختر اللي تبغاه:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
         return
 
-    # إذا ما فهم أي شيء
-    await update.message.reply_text("عذراً، لم أفهم طلبك.\nيرجى اختيار من الكيبورد أو الضغط على 🔙 رجوع")
+    await update.message.reply_text("يرجى اختيار من الكيبورد أو الضغط على 🔙 رجوع")
 
 
 # ==================== MAIN ====================
@@ -369,7 +296,7 @@ def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("✅ بوت تخمين البوكر الاحترافي جاهز للخدمة")
+    print("✅ بوت تكساس ويبلاي جاهز")
     app.run_polling(drop_pending_updates=True)
 
 
