@@ -34,26 +34,6 @@ def run_server():
     server.serve_forever()
 
 
-# ==================== RATE LIMIT (2 رسالة كل دقيقة) ====================
-user_limits = {}
-
-def check_limit(user_id):
-    tz = pytz.timezone("Asia/Riyadh")
-    minute = datetime.datetime.now(tz).minute
-
-    if user_id not in user_limits:
-        user_limits[user_id] = {"minute": minute, "count": 0}
-
-    if user_limits[user_id]["minute"] != minute:
-        user_limits[user_id] = {"minute": minute, "count": 0}
-
-    if user_limits[user_id]["count"] >= 2:
-        return False
-
-    user_limits[user_id]["count"] += 1
-    return True
-
-
 # ==================== DAILY LIMIT (حسب الاشتراك) ====================
 def get_subscription_days(user_id):
     conn = get_conn()
@@ -73,9 +53,8 @@ def get_subscription_days(user_id):
 def check_daily_limit(user_id):
     days_left = get_subscription_days(user_id)
     if days_left > 30:
-        return True  # غير محدود
+        return True
 
-    # اشتراك أسبوعي أو أقل → 50 مرة يومياً
     conn = get_conn()
     cursor = conn.cursor()
     today = datetime.date.today()
@@ -181,14 +160,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ==================== MESSAGE HANDLER (كل شيء هنا) ====================
+# ==================== MESSAGE HANDLER ====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.message.from_user.id
-
-    if not check_limit(user_id):
-        await update.message.reply_text("⏳ انتظر دقيقة قبل إرسال رسالة جديدة.")
-        return
 
     # ------------------ اشتراك / مدرب ------------------
     if text == "👤 اشتراك":
@@ -234,7 +209,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         return
 
-    # ------------------ التدريب (نفس النسخة القديمة) ------------------
+    # ------------------ التدريب ------------------
     if text == "🎯 تدريب":
         context.user_data.clear()
         context.user_data["training_step"] = "rank"
@@ -302,7 +277,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"تم اختيار: {text}")
             return
 
-    # ------------------ التخمين الجديد (حسب طلبك بالضبط) ------------------
+    # ------------------ التخمين (بدون أي limit دقيقة) ------------------
     if text == "🔮 التخمين":
         if not check_subscription(user_id):
             await update.message.reply_text("❌ اشتراكك منتهي، جدده أولاً")
@@ -321,11 +296,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # خطوات التخمين
     step = context.user_data.get("predict_step")
 
     if step == "winner_type":
-        context.user_data["winner_type"] = text  # نحفظه لكن ما نستخدمه في الحساب (حسب النسخة الأصلية)
+        context.user_data["winner_type"] = text
         context.user_data["predict_step"] = "rank"
         keyboard = [["A","K","Q","J"], ["10","9","8","7"], ["6","5","4","3","2"]]
         await update.message.reply_text("اختر رقم الورقة:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
@@ -359,10 +333,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(msg, parse_mode="Markdown")
 
-        # زيادة العداد اليومي
         increment_daily_count(user_id)
 
-        # زر خمن ثاني + العودة
         keyboard = [["🔄 خمن ثاني"], ["🔙 القائمة الرئيسية"]]
         await update.message.reply_text(
             "تم! اختر اللي تبغاه:",
@@ -397,7 +369,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("✅ Poker Bot Started Successfully")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
