@@ -3,11 +3,8 @@ import random
 import datetime
 import pytz
 import psycopg2
-import threading
 
-from flask import Flask
 from collections import Counter
-
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
@@ -15,19 +12,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-conn = psycopg2.connect(DATABASE_URL)
-cursor = conn.cursor()
 
-
-web_app = Flask(__name__)
-
-@web_app.route("/")
-def home():
-    return "Poker bot running"
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    web_app.run(host="0.0.0.0", port=port)
+def get_conn():
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 
 user_limits = {}
@@ -66,12 +53,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def check_subscription(user_id):
 
+    conn = get_conn()
+    cursor = conn.cursor()
+
     cursor.execute(
         "SELECT expire_date FROM users WHERE telegram_id=%s",
         (user_id,)
     )
 
     data = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
 
     if not data:
         return False
@@ -89,6 +82,9 @@ def database_prediction(rank, suit, previous):
     tz = pytz.timezone("Asia/Riyadh")
     minute = datetime.datetime.now(tz).minute
 
+    conn = get_conn()
+    cursor = conn.cursor()
+
     cursor.execute("""
     SELECT winner_type, hand_type
     FROM training_data
@@ -99,6 +95,9 @@ def database_prediction(rank, suit, previous):
     """,(rank,suit,previous,minute))
 
     rows = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
 
     winner_counter = Counter()
     hand_counter = Counter()
@@ -176,17 +175,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.message.from_user.id
 
-
-# ===============================
 # ACCOUNT TYPE
-# ===============================
 
     if text == "👤 اشتراك":
 
         context.user_data["role"] = "user"
         await update.message.reply_text("ارسل كود الاشتراك")
         return
-
 
     if text == "🎓 مدرب":
 
@@ -195,15 +190,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-# ===============================
 # CODE CHECK
-# ===============================
 
     role = context.user_data.get("role")
 
     if role:
 
         code = text
+
+        conn = get_conn()
+        cursor = conn.cursor()
 
         if role == "user":
 
@@ -239,6 +235,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             conn.commit()
 
+            cursor.close()
+            conn.close()
+
             if role == "user":
                 keyboard = [["🔮 التخمين"]]
             else:
@@ -255,116 +254,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
 
             await update.message.reply_text("الكود غير صحيح")
+            cursor.close()
+            conn.close()
             return
 
 
-# ===============================
-# TRAINING MODE
-# ===============================
-
-    if text == "🎯 تدريب":
-
-        if not check_subscription(user_id):
-
-            await update.message.reply_text("انتهى اشتراك المدرب")
-            return
-
-        context.user_data["train_step"] = "rank"
-
-        keyboard = [
-            ["A","K","Q","J"],
-            ["10","9","8","7"],
-            ["6","5","4","3","2"]
-        ]
-
-        await update.message.reply_text(
-            "اختر رقم الورقة للتدريب",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-
-        return
-
-
-    if context.user_data.get("train_step") == "rank":
-
-        context.user_data["rank"] = text
-        context.user_data["train_step"] = "suit"
-
-        keyboard = [["❤️","♦️"],["♠️","♣️"]]
-
-        await update.message.reply_text(
-            "اختر نوع الورقة",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-
-        return
-
-
-    if context.user_data.get("train_step") == "suit":
-
-        context.user_data["suit"] = text
-        context.user_data["train_step"] = "previous"
-
-        keyboard = [["زوجين","متتالية"],["فل هاوس","ثلاثة"],["اربعة"]]
-
-        await update.message.reply_text(
-            "ما الضربة السابقة",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-
-        return
-
-
-    if context.user_data.get("train_step") == "previous":
-
-        context.user_data["previous"] = text
-        context.user_data["train_step"] = "winner"
-
-        keyboard = [["زوجين","متتالية"],["فل هاوس","ثلاثة"],["اربعة"]]
-
-        await update.message.reply_text(
-            "ما نوع اوراق الفائز",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-
-        return
-
-
-    if context.user_data.get("train_step") == "winner":
-
-        rank = context.user_data["rank"]
-        suit = context.user_data["suit"]
-        previous = context.user_data["previous"]
-        winner = text
-
-        minute = datetime.datetime.now().minute
-        hand = ["ولا شيء"]
-
-        cursor.execute(
-            """
-            INSERT INTO training_data
-            (card_rank,card_suit,previous_hit,minute,winner_type,hand_type)
-            VALUES (%s,%s,%s,%s,%s,%s)
-            """,
-            (rank,suit,previous,minute,winner,hand)
-        )
-
-        conn.commit()
-
-        keyboard = [["🎯 تدريب"]]
-
-        await update.message.reply_text(
-            "تم حفظ التدريب",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-
-        context.user_data.clear()
-        return
-
-
-# ===============================
 # PREDICTION
-# ===============================
 
     if text == "🔮 التخمين":
 
@@ -394,81 +289,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-    if context.user_data.get("step") == "rank":
-
-        context.user_data["rank"] = text
-        context.user_data["step"] = "suit"
-
-        keyboard = [["❤️","♦️"],["♠️","♣️"]]
-
-        await update.message.reply_text(
-            "اختر نوع الورقة",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-
-        return
-
-
-    if context.user_data.get("step") == "suit":
-
-        context.user_data["suit"] = text
-        context.user_data["step"] = "previous"
-
-        keyboard = [["زوجين","متتالية"],["فل هاوس","ثلاثة"],["اربعة"]]
-
-        await update.message.reply_text(
-            "ما هي الضربة السابقة",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-
-        return
-
-
-    if context.user_data.get("step") == "previous":
-
-        context.user_data["previous"] = text
-
-        rank = context.user_data["rank"]
-        suit = context.user_data["suit"]
-        previous = context.user_data["previous"]
-
-        await update.message.reply_text("جاري الحساب...")
-
-        db_winner, db_hand = database_prediction(rank,suit,previous)
-        mc_winner, mc_hand = monte_carlo_prediction()
-
-        final_winner, final_hand = combine_predictions(
-            db_winner, db_hand,
-            mc_winner, mc_hand
-        )
-
-        winner = top_predictions(final_winner)
-        hand = top_predictions(final_hand)
-
-        message = "🔮 توقع نوع اوراق الفائز\n\n"
-
-        for w in winner:
-            message += f"{w[0]} : {w[1]}%\n"
-
-        message += "\n🃏 توقع اوراق اليد\n\n"
-
-        for h in hand:
-            message += f"{h[0]} : {h[1]}%\n"
-
-        keyboard = [["🔮 التخمين"]]
-
-        await update.message.reply_text(
-            message,
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-
-        context.user_data.clear()
-        return
-
-
 def main():
-
-    threading.Thread(target=run_web).start()
 
     app = ApplicationBuilder().token(TOKEN).build()
 
