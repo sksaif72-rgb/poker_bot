@@ -55,19 +55,18 @@ def get_subscription_days(user_id):
 
 
 def check_subscription(user_id):
-
     return get_subscription_days(user_id)>0
 
 
 # ================= LOAD DATA =================
 
-def load_recent(limit=500):
+def load_recent(limit=800):
 
     conn=get_conn()
     cur=conn.cursor()
 
     cur.execute("""
-    SELECT card_rank,card_suit,previous_winner_type,winner_type
+    SELECT card_rank,card_suit,previous_winner_type,winner_type,minute
     FROM training_data
     ORDER BY id DESC
     LIMIT %s
@@ -83,14 +82,14 @@ def load_recent(limit=500):
 
 # ================= AI =================
 
-def pattern_ai(rank,suit,previous):
+def pattern_ai(rank,suit,previous,minute):
 
     data=load_recent()
 
     c=Counter()
 
     for r in data:
-        if r[0]==rank and r[1]==suit and r[2]==previous:
+        if r[0]==rank and r[1]==suit and r[2]==previous and r[4]==minute:
             c[r[3]]+=1
 
     return c
@@ -109,7 +108,20 @@ def frequency_ai(rank,suit):
     return c
 
 
-def recency_ai(rank,suit,previous):
+def minute_ai(minute):
+
+    data=load_recent()
+
+    c=Counter()
+
+    for r in data:
+        if r[4]==minute:
+            c[r[3]]+=1
+
+    return c
+
+
+def recency_ai(rank,suit,previous,minute):
 
     data=load_recent()
 
@@ -119,7 +131,7 @@ def recency_ai(rank,suit,previous):
 
     for r in data:
 
-        if r[0]==rank and r[1]==suit and r[2]==previous:
+        if r[0]==rank and r[1]==suit and r[2]==previous and r[4]==minute:
             c[r[3]]+=weight
 
         weight-=1
@@ -134,38 +146,24 @@ def markov_ai(previous):
     c=Counter()
 
     for r in data:
-
         if r[2]==previous:
             c[r[3]]+=1
 
     return c
 
 
-def monte_carlo():
+def combine_ai(rank,suit,previous,minute):
 
-    options=["زوجين","متتالية","ثلاثة","فل هاوس","اربعة"]
-
-    c=Counter()
-
-    for _ in range(8000):
-
-        c[random.choice(options)]+=1
-
-    return c
-
-
-def combine_ai(rank,suit,previous):
-
-    p=pattern_ai(rank,suit,previous)
+    p=pattern_ai(rank,suit,previous,minute)
     f=frequency_ai(rank,suit)
-    r=recency_ai(rank,suit,previous)
+    r=recency_ai(rank,suit,previous,minute)
     m=markov_ai(previous)
-    mc=monte_carlo()
+    t=minute_ai(minute)
 
     final=Counter()
 
     for k,v in p.items():
-        final[k]+=v*3
+        final[k]+=v*4
 
     for k,v in f.items():
         final[k]+=v*2
@@ -176,8 +174,8 @@ def combine_ai(rank,suit,previous):
     for k,v in m.items():
         final[k]+=v*2
 
-    for k,v in mc.items():
-        final[k]+=v*1
+    for k,v in t.items():
+        final[k]+=v*3
 
     return final
 
@@ -201,14 +199,16 @@ def top3(counter):
 
 def save_round(rank,suit,previous,winner):
 
+    minute=datetime.datetime.now().minute
+
     conn=get_conn()
     cur=conn.cursor()
 
     cur.execute("""
     INSERT INTO training_data
-    (card_rank,card_suit,previous_winner_type,winner_type)
-    VALUES (%s,%s,%s,%s)
-    """,(rank,suit,previous,winner))
+    (card_rank,card_suit,previous_winner_type,winner_type,minute)
+    VALUES (%s,%s,%s,%s,%s)
+    """,(rank,suit,previous,winner,minute))
 
     conn.commit()
 
@@ -236,99 +236,21 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
     user_id=update.message.from_user.id
 
 
-# ===== اختيار نوع الحساب =====
-
-    if text=="👤 اشتراك":
-
-        context.user_data["role"]="user"
-        context.user_data["step"]="code"
-
-        await update.message.reply_text("أرسل كود الاشتراك")
-        return
-
-
-    if text=="🎓 مدرب":
-
-        context.user_data["role"]="trainer"
-        context.user_data["step"]="code"
-
-        await update.message.reply_text("أرسل كود المدرب")
-        return
-
-
-# ===== إدخال الكود =====
-
-    if context.user_data.get("step")=="code":
-
-        role=context.user_data["role"]
-        code=text
-
-        conn=get_conn()
-        cur=conn.cursor()
-
-        table="user_codes" if role=="user" else "trainer_codes"
-
-        cur.execute(f"SELECT days FROM {table} WHERE code=%s",(code,))
-        r=cur.fetchone()
-
-        if not r:
-
-            await update.message.reply_text("الكود غير صحيح")
-            return
-
-        days=r[0]
-
-        expire=datetime.datetime.now()+datetime.timedelta(days=days)
-
-        cur.execute("""
-        INSERT INTO users (telegram_id,expire_date)
-        VALUES (%s,%s)
-        ON CONFLICT (telegram_id)
-        DO UPDATE SET expire_date=%s
-        """,(user_id,expire,expire))
-
-        conn.commit()
-
-        cur.close()
-        conn.close()
-
-        kb=[["🔮 التخمين"],["📅 ايام الاشتراك"],["🔙 رجوع"]]
-
-        await update.message.reply_text(
-            f"تم التفعيل {days} يوم",
-            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
-        )
-
-        context.user_data.clear()
-
-        return
-
-
-# ===== عرض الاشتراك =====
-
-    if text=="📅 ايام الاشتراك":
-
-        days=get_subscription_days(user_id)
-
-        await update.message.reply_text(f"متبقي {days} يوم")
-        return
-
-
-# ===== التخمين =====
-
     if text=="🔮 التخمين":
 
         if not check_subscription(user_id):
-
             await update.message.reply_text("انتهى الاشتراك")
             return
 
+        minute=datetime.datetime.now().minute
+
+        context.user_data["minute"]=minute
         context.user_data["step"]="previous"
 
         kb=[["زوجين","متتالية"],["ثلاثة","فل هاوس"],["اربعة"]]
 
         await update.message.reply_text(
-            "ما آخر ضربة؟",
+            f"الدقيقة الحالية {minute}\nما آخر ضربة؟",
             reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
         )
 
@@ -370,13 +292,13 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
         rank=context.user_data["rank"]
         suit=text
         previous=context.user_data["previous"]
+        minute=context.user_data["minute"]
 
-        result=combine_ai(rank,suit,previous)
+        result=combine_ai(rank,suit,previous,minute)
 
         top=top3(result)
 
         if not top:
-
             await update.message.reply_text("لا توجد بيانات كافية")
             return
 
@@ -385,13 +307,10 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
         msg="🔮 تحليل الطاولة\n\n"
 
         for i,(name,prob) in enumerate(top):
-
             msg+=f"{labels[i]}\n{name} — {prob}%\n\n"
 
         await update.message.reply_text(msg)
 
-        context.user_data["rank"]=rank
-        context.user_data["suit"]=suit
         context.user_data["step"]="result"
 
         kb=[["زوجين","متتالية"],["ثلاثة","فل هاوس"],["اربعة"]]
@@ -423,8 +342,6 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
             "الجولة التالية اختر رقم الورقة",
             reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
         )
-
-        return
 
 
 # ================= MAIN =================
