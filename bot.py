@@ -177,6 +177,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
 
 
+# ===============================
+# ACCOUNT TYPE
+# ===============================
+
     if text == "👤 اشتراك":
 
         context.user_data["role"] = "user"
@@ -190,6 +194,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("ارسل كود المدرب")
         return
 
+
+# ===============================
+# CODE CHECK
+# ===============================
 
     role = context.user_data.get("role")
 
@@ -249,6 +257,114 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("الكود غير صحيح")
             return
 
+
+# ===============================
+# TRAINING MODE
+# ===============================
+
+    if text == "🎯 تدريب":
+
+        if not check_subscription(user_id):
+
+            await update.message.reply_text("انتهى اشتراك المدرب")
+            return
+
+        context.user_data["train_step"] = "rank"
+
+        keyboard = [
+            ["A","K","Q","J"],
+            ["10","9","8","7"],
+            ["6","5","4","3","2"]
+        ]
+
+        await update.message.reply_text(
+            "اختر رقم الورقة للتدريب",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+
+        return
+
+
+    if context.user_data.get("train_step") == "rank":
+
+        context.user_data["rank"] = text
+        context.user_data["train_step"] = "suit"
+
+        keyboard = [["❤️","♦️"],["♠️","♣️"]]
+
+        await update.message.reply_text(
+            "اختر نوع الورقة",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+
+        return
+
+
+    if context.user_data.get("train_step") == "suit":
+
+        context.user_data["suit"] = text
+        context.user_data["train_step"] = "previous"
+
+        keyboard = [["زوجين","متتالية"],["فل هاوس","ثلاثة"],["اربعة"]]
+
+        await update.message.reply_text(
+            "ما الضربة السابقة",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+
+        return
+
+
+    if context.user_data.get("train_step") == "previous":
+
+        context.user_data["previous"] = text
+        context.user_data["train_step"] = "winner"
+
+        keyboard = [["زوجين","متتالية"],["فل هاوس","ثلاثة"],["اربعة"]]
+
+        await update.message.reply_text(
+            "ما نوع اوراق الفائز",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+
+        return
+
+
+    if context.user_data.get("train_step") == "winner":
+
+        rank = context.user_data["rank"]
+        suit = context.user_data["suit"]
+        previous = context.user_data["previous"]
+        winner = text
+
+        minute = datetime.datetime.now().minute
+        hand = ["ولا شيء"]
+
+        cursor.execute(
+            """
+            INSERT INTO training_data
+            (card_rank,card_suit,previous_hit,minute,winner_type,hand_type)
+            VALUES (%s,%s,%s,%s,%s,%s)
+            """,
+            (rank,suit,previous,minute,winner,hand)
+        )
+
+        conn.commit()
+
+        keyboard = [["🎯 تدريب"]]
+
+        await update.message.reply_text(
+            "تم حفظ التدريب",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+
+        context.user_data.clear()
+        return
+
+
+# ===============================
+# PREDICTION
+# ===============================
 
     if text == "🔮 التخمين":
 
