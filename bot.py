@@ -3,8 +3,11 @@ import random
 import datetime
 import pytz
 import psycopg2
+import threading
 
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from collections import Counter
+
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
@@ -13,10 +16,26 @@ TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
+# DATABASE CONNECTION
 def get_conn():
     return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 
+# RENDER PORT SERVER
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'Poker bot running')
+
+
+def run_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    server.serve_forever()
+
+
+# LIMIT SYSTEM
 user_limits = {}
 
 def check_limit(user_id):
@@ -38,6 +57,7 @@ def check_limit(user_id):
     return True
 
 
+# START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
@@ -51,6 +71,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# CHECK SUBSCRIPTION
 def check_subscription(user_id):
 
     conn = get_conn()
@@ -77,6 +98,7 @@ def check_subscription(user_id):
     return True
 
 
+# DATABASE AI
 def database_prediction(rank, suit, previous):
 
     tz = pytz.timezone("Asia/Riyadh")
@@ -112,6 +134,7 @@ def database_prediction(rank, suit, previous):
     return winner_counter, hand_counter
 
 
+# MONTE CARLO
 def monte_carlo_prediction():
 
     winner_options = ["زوجين","متتالية","فل هاوس","ثلاثة","اربعة"]
@@ -131,6 +154,7 @@ def monte_carlo_prediction():
     return winner_counter, hand_counter
 
 
+# COMBINE AI
 def combine_predictions(db_winner, db_hand, mc_winner, mc_hand):
 
     final_winner = Counter()
@@ -151,6 +175,7 @@ def combine_predictions(db_winner, db_hand, mc_winner, mc_hand):
     return final_winner, final_hand
 
 
+# TOP RESULTS
 def top_predictions(counter):
 
     total = sum(counter.values())
@@ -170,13 +195,14 @@ def top_predictions(counter):
     return results
 
 
+# MESSAGE HANDLER
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text
     user_id = update.message.from_user.id
 
-# ACCOUNT TYPE
 
+# ACCOUNT TYPE
     if text == "👤 اشتراك":
 
         context.user_data["role"] = "user"
@@ -191,7 +217,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # CODE CHECK
-
     role = context.user_data.get("role")
 
     if role:
@@ -260,7 +285,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # PREDICTION
-
     if text == "🔮 التخمين":
 
         if not check_subscription(user_id):
@@ -289,7 +313,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
+# MAIN
 def main():
+
+    # render port
+    threading.Thread(target=run_server).start()
 
     app = ApplicationBuilder().token(TOKEN).build()
 
