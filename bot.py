@@ -81,7 +81,7 @@ def load_data():
     SELECT card_rank,card_suit,previous_winner_type,winner_type,minute
     FROM training_data
     ORDER BY id DESC
-    LIMIT 500
+    LIMIT 1000
     """)
 
     rows=cur.fetchall()
@@ -103,18 +103,35 @@ def predict(rank,suit,previous,minute):
         score=0
 
         if r[0]==rank and r[1]==suit:
-            score+=2
+            score+=3
 
         if r[2]==previous:
             score+=2
 
         if r[4]==minute:
-            score+=3
+            score+=4
 
         if score>0:
             c[r[3]]+=score
 
     return c
+
+
+def save_training(rank,suit,previous,result,minute):
+
+    conn=get_conn()
+    cur=conn.cursor()
+
+    cur.execute("""
+    INSERT INTO training_data
+    (card_rank,card_suit,previous_winner_type,winner_type,minute)
+    VALUES (%s,%s,%s,%s,%s)
+    """,(rank,suit,previous,result,minute))
+
+    conn.commit()
+
+    cur.close()
+    conn.close()
 
 
 # ================= START =================
@@ -176,6 +193,20 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
         return
 
 
+# -------- المدرب --------
+
+    if "مدرب" in text:
+
+        kb=[["🔮 التخمين"]]
+
+        await update.message.reply_text(
+            "وضع المدرب مفعل",
+            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+        )
+
+        return
+
+
 # -------- التخمين --------
 
     if text=="🔮 التخمين":
@@ -195,6 +226,8 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
         return
 
 
+# -------- الضربة السابقة --------
+
     if context.user_data.get("step")=="previous":
 
         context.user_data["previous"]=text
@@ -210,6 +243,8 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
         return
 
 
+# -------- رقم الورقة --------
+
     if context.user_data.get("step")=="rank":
 
         context.user_data["rank"]=text
@@ -224,6 +259,8 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
         return
 
+
+# -------- نوع الورقة --------
 
     if context.user_data.get("step")=="suit":
 
@@ -241,19 +278,21 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
         if total==0:
 
             await update.message.reply_text("لا يوجد بيانات كافية")
-            return
 
-        msg="🔮 التحليل\n\n"
+        else:
 
-        labels=["🔥 افضل تخمين","⚖️ تخمين وسط","⚠️ تخمين ضعيف"]
+            msg="🔮 التحليل\n\n"
 
-        for i,(k,v) in enumerate(result.most_common(3)):
+            labels=["🔥 افضل تخمين","⚖️ تخمين وسط","⚠️ تخمين ضعيف"]
 
-            p=round(v/total*100,2)
+            for i,(k,v) in enumerate(result.most_common(3)):
 
-            msg+=f"{labels[i]}\n{k} — {p}%\n\n"
+                p=round(v/total*100,2)
 
-        await update.message.reply_text(msg)
+                msg+=f"{labels[i]}\n{k} — {p}%\n\n"
+
+            await update.message.reply_text(msg)
+
 
         context.user_data["step"]="result"
 
@@ -261,6 +300,30 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(
             "اختر الضربة الصحيحة",
+            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+        )
+
+        return
+
+
+# -------- حفظ التدريب --------
+
+    if context.user_data.get("step")=="result":
+
+        rank=context.user_data["rank"]
+        suit=context.user_data["suit"]
+        previous=context.user_data["previous"]
+        minute=context.user_data["minute"]
+
+        save_training(rank,suit,previous,text,minute)
+
+        context.user_data["previous"]=text
+        context.user_data["step"]="rank"
+
+        kb=[["A","K","Q","J"],["10","9","8","7"],["6","5","4","3","2"]]
+
+        await update.message.reply_text(
+            "تم حفظ الضربة\nاختر رقم الورقة الجديدة",
             reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
         )
 
