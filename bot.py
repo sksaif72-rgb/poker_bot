@@ -15,14 +15,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-
 conn = psycopg2.connect(DATABASE_URL)
 cursor = conn.cursor()
 
-
-# ==============================
-# WEB SERVER FOR RENDER
-# ==============================
 
 web_app = Flask(__name__)
 
@@ -34,10 +29,6 @@ def run_web():
     port = int(os.environ.get("PORT", 10000))
     web_app.run(host="0.0.0.0", port=port)
 
-
-# ==============================
-# LIMIT SYSTEM (2 per minute)
-# ==============================
 
 user_limits = {}
 
@@ -60,10 +51,6 @@ def check_limit(user_id):
     return True
 
 
-# ==============================
-# START
-# ==============================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
@@ -77,9 +64,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ==============================
-# DATABASE AI
-# ==============================
+def check_subscription(user_id):
+
+    cursor.execute(
+        "SELECT expire_date FROM users WHERE telegram_id=%s",
+        (user_id,)
+    )
+
+    data = cursor.fetchone()
+
+    if not data:
+        return False
+
+    expire = data[0]
+
+    if datetime.datetime.now() > expire:
+        return False
+
+    return True
+
 
 def database_prediction(rank, suit, previous):
 
@@ -110,10 +113,6 @@ def database_prediction(rank, suit, previous):
     return winner_counter, hand_counter
 
 
-# ==============================
-# MONTE CARLO
-# ==============================
-
 def monte_carlo_prediction():
 
     winner_options = ["زوجين","متتالية","فل هاوس","ثلاثة","اربعة"]
@@ -132,10 +131,6 @@ def monte_carlo_prediction():
 
     return winner_counter, hand_counter
 
-
-# ==============================
-# COMBINE
-# ==============================
 
 def combine_predictions(db_winner, db_hand, mc_winner, mc_hand):
 
@@ -157,10 +152,6 @@ def combine_predictions(db_winner, db_hand, mc_winner, mc_hand):
     return final_winner, final_hand
 
 
-# ==============================
-# TOP RESULTS
-# ==============================
-
 def top_predictions(counter):
 
     total = sum(counter.values())
@@ -180,37 +171,25 @@ def top_predictions(counter):
     return results
 
 
-# ==============================
-# MAIN HANDLER
-# ==============================
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text
     user_id = update.message.from_user.id
 
 
-# SUBSCRIBE
-
     if text == "👤 اشتراك":
 
         context.user_data["role"] = "user"
-
         await update.message.reply_text("ارسل كود الاشتراك")
         return
 
 
-# TRAINER
-
     if text == "🎓 مدرب":
 
         context.user_data["role"] = "trainer"
-
         await update.message.reply_text("ارسل كود المدرب")
         return
 
-
-# CODE CHECK
 
     role = context.user_data.get("role")
 
@@ -221,38 +200,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if role == "user":
 
             cursor.execute(
-                "SELECT used FROM user_codes WHERE code=%s",
+                "SELECT days FROM user_codes WHERE code=%s",
                 (code,)
             )
 
         else:
 
             cursor.execute(
-                "SELECT used FROM trainer_codes WHERE code=%s",
+                "SELECT days FROM trainer_codes WHERE code=%s",
                 (code,)
             )
 
         result = cursor.fetchone()
 
-        if result and result[0] == False:
+        if result:
 
-            if role == "user":
+            days = result[0]
 
-                cursor.execute(
-                    "UPDATE user_codes SET used=true WHERE code=%s",
-                    (code,)
-                )
-
-            else:
-
-                cursor.execute(
-                    "UPDATE trainer_codes SET used=true WHERE code=%s",
-                    (code,)
-                )
+            expire = datetime.datetime.now() + datetime.timedelta(days=days)
 
             cursor.execute(
-                "INSERT INTO users (telegram_id, role) VALUES (%s,%s)",
-                (user_id, role)
+                """
+                INSERT INTO users (telegram_id,role,expire_date)
+                VALUES (%s,%s,%s)
+                ON CONFLICT (telegram_id)
+                DO UPDATE SET expire_date=%s
+                """,
+                (user_id,role,expire,expire)
             )
 
             conn.commit()
@@ -263,7 +237,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 keyboard = [["🎯 تدريب"]]
 
             await update.message.reply_text(
-                "تم التفعيل بنجاح",
+                f"تم التفعيل لمدة {days} يوم",
                 reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             )
 
@@ -276,13 +250,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
 
-# START PREDICTION
-
     if text == "🔮 التخمين":
+
+        if not check_subscription(user_id):
+
+            await update.message.reply_text("انتهى الاشتراك")
+            return
 
         if not check_limit(user_id):
 
-            await update.message.reply_text("وصلت الحد الاقصى للتخمين في هذه الدقيقة")
+            await update.message.reply_text("وصلت الحد الاقصى لهذه الدقيقة")
             return
 
         context.user_data["step"] = "rank"
@@ -301,17 +278,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-# RANK
-
     if context.user_data.get("step") == "rank":
 
         context.user_data["rank"] = text
         context.user_data["step"] = "suit"
 
-        keyboard = [
-            ["❤️","♦️"],
-            ["♠️","♣️"]
-        ]
+        keyboard = [["❤️","♦️"],["♠️","♣️"]]
 
         await update.message.reply_text(
             "اختر نوع الورقة",
@@ -321,18 +293,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-# SUIT
-
     if context.user_data.get("step") == "suit":
 
         context.user_data["suit"] = text
         context.user_data["step"] = "previous"
 
-        keyboard = [
-            ["زوجين","متتالية"],
-            ["فل هاوس","ثلاثة"],
-            ["اربعة"]
-        ]
+        keyboard = [["زوجين","متتالية"],["فل هاوس","ثلاثة"],["اربعة"]]
 
         await update.message.reply_text(
             "ما هي الضربة السابقة",
@@ -341,8 +307,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-
-# FINAL PREDICTION
 
     if context.user_data.get("step") == "previous":
 
@@ -385,10 +349,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         return
 
-
-# ==============================
-# RUN BOT
-# ==============================
 
 def main():
 
