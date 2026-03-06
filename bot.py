@@ -3,17 +3,10 @@ import random
 import datetime
 import pytz
 import psycopg2
-
 from collections import Counter
 
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -21,10 +14,34 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 conn = psycopg2.connect(DATABASE_URL)
 cursor = conn.cursor()
 
+# ==============================
+# LIMIT SYSTEM (2 per minute)
+# ==============================
 
-# =========================
+user_limits = {}
+
+def check_limit(user_id):
+
+    tz = pytz.timezone("Asia/Riyadh")
+    minute = datetime.datetime.now(tz).minute
+
+    if user_id not in user_limits:
+        user_limits[user_id] = {"minute": minute, "count": 0}
+
+    if user_limits[user_id]["minute"] != minute:
+        user_limits[user_id]["minute"] = minute
+        user_limits[user_id]["count"] = 0
+
+    if user_limits[user_id]["count"] >= 2:
+        return False
+
+    user_limits[user_id]["count"] += 1
+    return True
+
+
+# ==============================
 # START
-# =========================
+# ==============================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -33,17 +50,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ["🎓 مدرب"]
     ]
 
-    reply = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
     await update.message.reply_text(
-        "🤖 اهلا بك في بوت تخمين البوكر",
-        reply_markup=reply
+        "♠️ بوت تخمين البوكر\n\nاختر نوع الحساب:",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
 
 
-# =========================
+# ==============================
 # DATABASE AI
-# =========================
+# ==============================
 
 def database_prediction(rank, suit, previous):
 
@@ -57,26 +72,26 @@ def database_prediction(rank, suit, previous):
     AND card_suit=%s
     AND previous_hit=%s
     AND minute=%s
-    """, (rank, suit, previous, minute))
+    """,(rank,suit,previous,minute))
 
     rows = cursor.fetchall()
 
     winner_counter = Counter()
     hand_counter = Counter()
 
-    for r in rows:
+    for row in rows:
 
-        winner_counter[r[0]] += 1
+        winner_counter[row[0]] += 1
 
-        for h in r[1]:
+        for h in row[1]:
             hand_counter[h] += 1
 
     return winner_counter, hand_counter
 
 
-# =========================
-# MONTE CARLO
-# =========================
+# ==============================
+# MONTE CARLO SIMULATION
+# ==============================
 
 def monte_carlo_prediction():
 
@@ -86,7 +101,7 @@ def monte_carlo_prediction():
     winner_counter = Counter()
     hand_counter = Counter()
 
-    for i in range(5000):
+    for i in range(10000):
 
         winner = random.choice(winner_options)
         winner_counter[winner] += 1
@@ -97,9 +112,9 @@ def monte_carlo_prediction():
     return winner_counter, hand_counter
 
 
-# =========================
+# ==============================
 # COMBINE AI
-# =========================
+# ==============================
 
 def combine_predictions(db_winner, db_hand, mc_winner, mc_hand):
 
@@ -121,9 +136,9 @@ def combine_predictions(db_winner, db_hand, mc_winner, mc_hand):
     return final_winner, final_hand
 
 
-# =========================
-# TOP RESULTS
-# =========================
+# ==============================
+# TOP 2 RESULTS
+# ==============================
 
 def top_predictions(counter):
 
@@ -132,61 +147,58 @@ def top_predictions(counter):
     if total == 0:
         return []
 
-    result = counter.most_common(2)
+    top = counter.most_common(2)
 
-    formatted = []
+    results = []
 
-    for name,value in result:
+    for name,val in top:
 
-        percent = round((value / total) * 100,2)
+        percent = round((val/total)*100,2)
 
-        formatted.append((name,percent))
+        results.append((name,percent))
 
-    return formatted
+    return results
 
 
-# =========================
-# MESSAGE HANDLER
-# =========================
+# ==============================
+# MAIN HANDLER
+# ==============================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text
+    user_id = update.message.from_user.id
 
 
-# =========================
+# ==============================
 # SUBSCRIBE
-# =========================
+# ==============================
 
     if text == "👤 اشتراك":
 
         context.user_data["role"] = "user"
 
-        await update.message.reply_text(
-            "🔑 ارسل كود الاشتراك"
-        )
+        await update.message.reply_text("ارسل كود الاشتراك")
 
         return
 
 
-# =========================
+# ==============================
 # TRAINER
-# =========================
+# ==============================
 
     if text == "🎓 مدرب":
 
         context.user_data["role"] = "trainer"
 
-        await update.message.reply_text(
-            "🔑 ارسل كود المدرب"
-        )
+        await update.message.reply_text("ارسل كود المدرب")
 
         return
 
 
-# =========================
+# ==============================
 # CODE CHECK
-# =========================
+# ==============================
 
     role = context.user_data.get("role")
 
@@ -228,24 +240,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             cursor.execute(
                 "INSERT INTO users (telegram_id, role) VALUES (%s,%s)",
-                (update.message.from_user.id, role)
+                (user_id, role)
             )
 
             conn.commit()
 
             if role == "user":
-
                 keyboard = [["🔮 التخمين"]]
-
             else:
-
                 keyboard = [["🎯 تدريب"]]
 
-            reply = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
             await update.message.reply_text(
-                "✅ تم التفعيل بنجاح",
-                reply_markup=reply
+                "تم التفعيل بنجاح",
+                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             )
 
             context.user_data.clear()
@@ -254,18 +261,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         else:
 
-            await update.message.reply_text(
-                "❌ الكود غير صحيح"
-            )
+            await update.message.reply_text("الكود غير صحيح")
 
             return
 
 
-# =========================
+# ==============================
 # PREDICTION START
-# =========================
+# ==============================
 
     if text == "🔮 التخمين":
+
+        if not check_limit(user_id):
+
+            await update.message.reply_text(
+                "وصلت الحد الاقصى للتخمين في هذه الدقيقة"
+            )
+
+            return
+
+        context.user_data["step"] = "rank"
 
         keyboard = [
             ["A","K","Q","J"],
@@ -273,19 +288,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ["6","5","4","3","2"]
         ]
 
-        context.user_data["step"] = "rank"
-
         await update.message.reply_text(
-            "🃏 اختر رقم الورقة",
-            reply_markup=ReplyKeyboardMarkup(keyboard,resize_keyboard=True)
+            "اختر رقم الورقة",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         )
 
         return
 
 
-# =========================
+# ==============================
 # RANK
-# =========================
+# ==============================
 
     if context.user_data.get("step") == "rank":
 
@@ -299,15 +312,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(
             "اختر نوع الورقة",
-            reply_markup=ReplyKeyboardMarkup(keyboard,resize_keyboard=True)
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         )
 
         return
 
 
-# =========================
+# ==============================
 # SUIT
-# =========================
+# ==============================
 
     if context.user_data.get("step") == "suit":
 
@@ -321,16 +334,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
 
         await update.message.reply_text(
-            "ما هي الضربة السابقة؟",
-            reply_markup=ReplyKeyboardMarkup(keyboard,resize_keyboard=True)
+            "ما هي الضربة السابقة",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         )
 
         return
 
 
-# =========================
+# ==============================
 # FINAL PREDICTION
-# =========================
+# ==============================
 
     if context.user_data.get("step") == "previous":
 
@@ -340,10 +353,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         suit = context.user_data["suit"]
         previous = context.user_data["previous"]
 
-        await update.message.reply_text("🔮 جاري حساب التوقع...")
+        await update.message.reply_text("جاري الحساب...")
 
         db_winner, db_hand = database_prediction(rank,suit,previous)
-
         mc_winner, mc_hand = monte_carlo_prediction()
 
         final_winner, final_hand = combine_predictions(
@@ -354,21 +366,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         winner = top_predictions(final_winner)
         hand = top_predictions(final_hand)
 
-        message = "🔮 توقع نوع أوراق الفائز\n\n"
+        message = "🔮 توقع نوع اوراق الفائز\n\n"
 
         for w in winner:
             message += f"{w[0]} : {w[1]}%\n"
 
-        message += "\n🃏 توقع أوراق اليد\n\n"
+        message += "\n🃏 توقع اوراق اليد\n\n"
 
         for h in hand:
             message += f"{h[0]} : {h[1]}%\n"
 
-        keyboard = [["🔮 التخمين"]]
+        keyboard = [["🔮 التخمين التالي"]]
 
         await update.message.reply_text(
             message,
-            reply_markup=ReplyKeyboardMarkup(keyboard,resize_keyboard=True)
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         )
 
         context.user_data.clear()
@@ -376,9 +388,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-# =========================
+# ==============================
 # APP
-# =========================
+# ==============================
 
 app = ApplicationBuilder().token(TOKEN).build()
 
