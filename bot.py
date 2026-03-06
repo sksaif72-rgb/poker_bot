@@ -1,5 +1,4 @@
 import os
-import random
 import datetime
 import psycopg2
 import threading
@@ -21,11 +20,13 @@ def get_conn():
     return psycopg2.connect(DATABASE_URL,sslmode="require")
 
 
+# ================= SERVER =================
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b'Poker bot running')
+        self.wfile.write(b'Bot running')
 
 
 def run_server():
@@ -36,31 +37,42 @@ def run_server():
 
 # ================= SUBSCRIPTION =================
 
-def get_subscription_days(user_id):
+def activate_user(user_id,days):
 
     conn=get_conn()
     cur=conn.cursor()
 
-    cur.execute("SELECT expire_date FROM users WHERE telegram_id=%s",(user_id,))
-    data=cur.fetchone()
+    expire=datetime.datetime.now()+datetime.timedelta(days=days)
+
+    cur.execute("""
+    INSERT INTO users (telegram_id,expire_date)
+    VALUES (%s,%s)
+    ON CONFLICT (telegram_id)
+    DO UPDATE SET expire_date=%s
+    """,(user_id,expire,expire))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def check_user_code(code):
+
+    conn=get_conn()
+    cur=conn.cursor()
+
+    cur.execute("SELECT days FROM user_codes WHERE code=%s",(code,))
+    r=cur.fetchone()
 
     cur.close()
     conn.close()
 
-    if not data:
-        return 0
-
-    days=(data[0].date()-datetime.date.today()).days
-    return max(days,0)
+    return r
 
 
-def check_subscription(user_id):
-    return get_subscription_days(user_id)>0
+# ================= AI =================
 
-
-# ================= LOAD DATA =================
-
-def load_recent(limit=800):
+def load_data():
 
     conn=get_conn()
     cur=conn.cursor()
@@ -69,8 +81,8 @@ def load_recent(limit=800):
     SELECT card_rank,card_suit,previous_winner_type,winner_type,minute
     FROM training_data
     ORDER BY id DESC
-    LIMIT %s
-    """,(limit,))
+    LIMIT 500
+    """)
 
     rows=cur.fetchall()
 
@@ -80,150 +92,42 @@ def load_recent(limit=800):
     return rows
 
 
-# ================= AI =================
+def predict(rank,suit,previous,minute):
 
-def pattern_ai(rank,suit,previous,minute):
-
-    data=load_recent()
+    data=load_data()
 
     c=Counter()
 
     for r in data:
-        if r[0]==rank and r[1]==suit and r[2]==previous and r[4]==minute:
-            c[r[3]]+=1
 
-    return c
+        score=0
 
-
-def frequency_ai(rank,suit):
-
-    data=load_recent()
-
-    c=Counter()
-
-    for r in data:
         if r[0]==rank and r[1]==suit:
-            c[r[3]]+=1
+            score+=2
 
-    return c
-
-
-def minute_ai(minute):
-
-    data=load_recent()
-
-    c=Counter()
-
-    for r in data:
-        if r[4]==minute:
-            c[r[3]]+=1
-
-    return c
-
-
-def recency_ai(rank,suit,previous,minute):
-
-    data=load_recent()
-
-    c=Counter()
-
-    weight=len(data)
-
-    for r in data:
-
-        if r[0]==rank and r[1]==suit and r[2]==previous and r[4]==minute:
-            c[r[3]]+=weight
-
-        weight-=1
-
-    return c
-
-
-def markov_ai(previous):
-
-    data=load_recent()
-
-    c=Counter()
-
-    for r in data:
         if r[2]==previous:
-            c[r[3]]+=1
+            score+=2
+
+        if r[4]==minute:
+            score+=3
+
+        if score>0:
+            c[r[3]]+=score
 
     return c
-
-
-def combine_ai(rank,suit,previous,minute):
-
-    p=pattern_ai(rank,suit,previous,minute)
-    f=frequency_ai(rank,suit)
-    r=recency_ai(rank,suit,previous,minute)
-    m=markov_ai(previous)
-    t=minute_ai(minute)
-
-    final=Counter()
-
-    for k,v in p.items():
-        final[k]+=v*4
-
-    for k,v in f.items():
-        final[k]+=v*2
-
-    for k,v in r.items():
-        final[k]+=v*4
-
-    for k,v in m.items():
-        final[k]+=v*2
-
-    for k,v in t.items():
-        final[k]+=v*3
-
-    return final
-
-
-def top3(counter):
-
-    total=sum(counter.values())
-
-    if total==0:
-        return []
-
-    res=[]
-
-    for k,v in counter.most_common(3):
-        res.append((k,round(v/total*100,2)))
-
-    return res
-
-
-# ================= SAVE =================
-
-def save_round(rank,suit,previous,winner):
-
-    minute=datetime.datetime.now().minute
-
-    conn=get_conn()
-    cur=conn.cursor()
-
-    cur.execute("""
-    INSERT INTO training_data
-    (card_rank,card_suit,previous_winner_type,winner_type,minute)
-    VALUES (%s,%s,%s,%s,%s)
-    """,(rank,suit,previous,winner,minute))
-
-    conn.commit()
-
-    cur.close()
-    conn.close()
 
 
 # ================= START =================
 
 async def start(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
-    kb=[["👤 اشتراك"],["🎓 مدرب"]]
+    kb=[
+        ["👤 اشتراك"],
+        ["🎓 مدرب"]
+    ]
 
     await update.message.reply_text(
-        "اهلا وسهلا بوت تكساس ويبلاي ♠️",
+        "اهلا وسهلا بوت تكساس ♠️",
         reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
     )
 
@@ -232,15 +136,49 @@ async def start(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
 async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
-    text=update.message.text.strip()
+    text=update.message.text
     user_id=update.message.from_user.id
 
 
-    if text=="🔮 التخمين":
+# -------- اشتراك --------
 
-        if not check_subscription(user_id):
-            await update.message.reply_text("انتهى الاشتراك")
+    if text=="👤 اشتراك":
+
+        context.user_data["step"]="user_code"
+
+        await update.message.reply_text("ادخل كود الاشتراك")
+
+        return
+
+
+    if context.user_data.get("step")=="user_code":
+
+        code=text
+
+        r=check_user_code(code)
+
+        if not r:
+
+            await update.message.reply_text("الكود غير صحيح")
             return
+
+        activate_user(user_id,r[0])
+
+        kb=[["🔮 التخمين"]]
+
+        await update.message.reply_text(
+            "تم تفعيل الاشتراك",
+            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+        )
+
+        context.user_data["step"]=None
+
+        return
+
+
+# -------- التخمين --------
+
+    if text=="🔮 التخمين":
 
         minute=datetime.datetime.now().minute
 
@@ -250,7 +188,7 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
         kb=[["زوجين","متتالية"],["ثلاثة","فل هاوس"],["اربعة"]]
 
         await update.message.reply_text(
-            f"الدقيقة الحالية {minute}\nما آخر ضربة؟",
+            f"الدقيقة {minute}\nما اخر ضربة؟",
             reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
         )
 
@@ -294,20 +232,26 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
         previous=context.user_data["previous"]
         minute=context.user_data["minute"]
 
-        result=combine_ai(rank,suit,previous,minute)
+        context.user_data["suit"]=suit
 
-        top=top3(result)
+        result=predict(rank,suit,previous,minute)
 
-        if not top:
-            await update.message.reply_text("لا توجد بيانات كافية")
+        total=sum(result.values())
+
+        if total==0:
+
+            await update.message.reply_text("لا يوجد بيانات كافية")
             return
+
+        msg="🔮 التحليل\n\n"
 
         labels=["🔥 افضل تخمين","⚖️ تخمين وسط","⚠️ تخمين ضعيف"]
 
-        msg="🔮 تحليل الطاولة\n\n"
+        for i,(k,v) in enumerate(result.most_common(3)):
 
-        for i,(name,prob) in enumerate(top):
-            msg+=f"{labels[i]}\n{name} — {prob}%\n\n"
+            p=round(v/total*100,2)
+
+            msg+=f"{labels[i]}\n{k} — {p}%\n\n"
 
         await update.message.reply_text(msg)
 
@@ -316,32 +260,11 @@ async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
         kb=[["زوجين","متتالية"],["ثلاثة","فل هاوس"],["اربعة"]]
 
         await update.message.reply_text(
-            "⚠️ اختر الضربة الصحيحة",
+            "اختر الضربة الصحيحة",
             reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
         )
 
         return
-
-
-    if context.user_data.get("step")=="result":
-
-        rank=context.user_data["rank"]
-        suit=context.user_data["suit"]
-        previous=context.user_data["previous"]
-
-        winner=text
-
-        save_round(rank,suit,previous,winner)
-
-        context.user_data["previous"]=winner
-        context.user_data["step"]="rank"
-
-        kb=[["A","K","Q","J"],["10","9","8","7"],["6","5","4","3","2"]]
-
-        await update.message.reply_text(
-            "الجولة التالية اختر رقم الورقة",
-            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
-        )
 
 
 # ================= MAIN =================
@@ -358,7 +281,7 @@ def main():
 
     print("Bot Running")
 
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling()
 
 
 if __name__=="__main__":
