@@ -330,7 +330,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rank = context.user_data["rank"]
         suit = context.user_data["suit"]
 
-        db_winner, db_hand = database_prediction(rank,suit,False)
+db_winner, db_hand = database_prediction(rank,suit,"false")
         mc_winner, mc_hand = monte_carlo_prediction()
 
         final_winner, final_hand = combine_predictions(
@@ -402,7 +402,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """,(
                 rank,
                 suit,
-                False,
+                "false",
                 datetime.datetime.now().minute,
                 winner,
                 hands
