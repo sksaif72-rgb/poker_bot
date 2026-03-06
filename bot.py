@@ -288,6 +288,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "🎯 تدريب":
 
+        context.user_data.clear()
         context.user_data["training_step"] = "rank"
 
         keyboard = [
@@ -303,6 +304,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
+# اختيار الرقم
     if context.user_data.get("training_step") == "rank":
 
         context.user_data["rank"] = text
@@ -320,62 +322,115 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
+# اختيار النوع + إعطاء التخمين
     if context.user_data.get("training_step") == "suit":
 
-        rank = context.user_data.get("rank")
-        suit = text
+        context.user_data["suit"] = text
 
-        conn = get_conn()
-        cursor = conn.cursor()
+        rank = context.user_data["rank"]
+        suit = context.user_data["suit"]
 
-        cursor.execute("""
-        INSERT INTO training_data(card_rank,card_suit,previous_hit,minute,winner_type,hand_type)
-        VALUES(%s,%s,%s,%s,%s,%s)
-        """,(rank,suit,False,datetime.datetime.now().minute,"unknown",["unknown"]))
+        db_winner, db_hand = database_prediction(rank,suit,False)
+        mc_winner, mc_hand = monte_carlo_prediction()
 
-        conn.commit()
-
-        cursor.close()
-        conn.close()
-
-        context.user_data.clear()
-
-        await update.message.reply_text(
-            f"تم تسجيل التدريب للورقة {rank} {suit}"
+        final_winner, final_hand = combine_predictions(
+            db_winner,db_hand,mc_winner,mc_hand
         )
 
-        return
+        winners = top_predictions(final_winner)
 
+        msg = "🔮 التخمين:\n\n"
 
-# PREDICTION
-    if text == "🔮 التخمين":
+        for w in winners:
+            msg += f"{w[0]} : {w[1]}%\n"
 
-        if not check_subscription(user_id):
+        await update.message.reply_text(msg)
 
-            await update.message.reply_text("انتهى الاشتراك")
-            return
-
-        if not check_limit(user_id):
-
-            await update.message.reply_text("وصلت الحد الاقصى لهذه الدقيقة")
-            return
-
-        context.user_data["step"] = "rank"
+        context.user_data["training_step"] = "winner"
 
         keyboard = [
-            ["A","K","Q","J"],
-            ["10","9","8","7"],
-            ["6","5","4","3","2"]
+            ["زوجين","متتالية"],
+            ["فل هاوس","ثلاثة"],
+            ["اربعة"]
         ]
 
         await update.message.reply_text(
-            "اختر رقم الورقة",
+            "ما الذي ضرب؟",
             reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         )
-
         return
 
 
+# اختيار الفائز
+    if context.user_data.get("training_step") == "winner":
+
+        context.user_data["winner"] = text
+        context.user_data["training_step"] = "hand"
+
+        context.user_data["hands"] = []
+
+        keyboard = [
+            ["متتالية نفس النوع","زوج"],
+            ["دبل AA","ولا شيء"],
+            ["✅ تم"]
+        ]
+
+        await update.message.reply_text(
+            "اختر نوع أوراق اليد (يمكن اختيار أكثر من خيار ثم اضغط تم)",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        return
+
+
+# اختيار أوراق اليد
+    if context.user_data.get("training_step") == "hand":
+
+        if text == "✅ تم":
+
+            rank = context.user_data["rank"]
+            suit = context.user_data["suit"]
+            winner = context.user_data["winner"]
+            hands = context.user_data["hands"]
+
+            conn = get_conn()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+            INSERT INTO training_data
+            (card_rank,card_suit,previous_hit,minute,winner_type,hand_type)
+            VALUES(%s,%s,%s,%s,%s,%s)
+            """,(
+                rank,
+                suit,
+                False,
+                datetime.datetime.now().minute,
+                winner,
+                hands
+            ))
+
+            conn.commit()
+
+            cursor.close()
+            conn.close()
+
+            keyboard = [["🎯 تدريب"]]
+
+            await update.message.reply_text(
+                "✅ تم حفظ التدريب",
+                reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            )
+
+            context.user_data.clear()
+            return
+
+        else:
+
+            context.user_data["hands"].append(text)
+
+            await update.message.reply_text(
+                f"تم اختيار: {text}"
+            )
+            return
 # MAIN
 def main():
 
