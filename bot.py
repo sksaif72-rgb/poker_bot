@@ -15,7 +15,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
-# ==================== DATABASE & KEEP-ALIVE (نفس السابق) ====================
+# ==================== DATABASE & KEEP-ALIVE ====================
 def get_conn():
     return psycopg2.connect(DATABASE_URL, sslmode="require")
 
@@ -147,25 +147,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return
 
-    # اشتراك
+    # ==================== اشتراك ====================
     if text in ["👤 اشتراك", "اشتراك"]:
         context.user_data["role"] = "user"
         await update.message.reply_text("يرجى إرسال كود الاشتراك الآن:")
         return
 
-    # مدرب
+    # ==================== مدرب ====================
     if text in ["🎓 مدرب", "مدرب"]:
         context.user_data["role"] = "trainer"
         await update.message.reply_text("يرجى إرسال كود المدرب الآن:")
         return
 
-    # تفعيل الكود (نفس السابق)
+    # ==================== تفعيل الكود (الجزء المصحح) ====================
     role = context.user_data.get("role")
     if role:
-        # ... (نفس كود التفعيل السابق)
+        code = text
+        conn = get_conn()
+        cursor = conn.cursor()
+        table = "user_codes" if role == "user" else "trainer_codes"
+        cursor.execute(f"SELECT days FROM {table} WHERE code=%s", (code,))
+        result = cursor.fetchone()
+
+        if result:
+            days = result[0]
+            expire = datetime.datetime.now() + datetime.timedelta(days=days)
+            cursor.execute("""
+                INSERT INTO users (telegram_id, role, expire_date)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (telegram_id) DO UPDATE SET expire_date = %s
+            """, (user_id, role, expire, expire))
+            conn.commit()
+
+            kb = [["🔮 التخمين"]] if role == "user" else [["🎯 تدريب"]]
+            await update.message.reply_text(
+                f"مبروك! 🎉\nتم تفعيل اشتراكك بنجاح لمدة {days} يوم.",
+                reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
+            )
+            context.user_data.clear()
+        else:
+            await update.message.reply_text("الكود غير صحيح.")
+        cursor.close()
+        conn.close()
         return
 
-    # ==================== التخمين (التعديل الرئيسي) ====================
+    # ==================== التخمين (بدون سؤال آخر ضربة بعد أول مرة) ====================
     if text in ["🔮 التخمين", "تخمين"]:
         if not check_subscription(user_id) or not check_daily_limit(user_id):
             return
@@ -173,8 +199,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         context.user_data["flow"] = "predict"
 
-        # إذا كان هناك ضربة سابقة محفوظة → ننتقل مباشرة للرقم
         if "last_real_winner" in context.user_data:
+            # الجولات التالية: نبدأ مباشرة من رقم الورقة
             context.user_data["previous_winner"] = context.user_data["last_real_winner"]
             context.user_data["predict_step"] = "rank"
             kb = [["A","K","Q","J"], ["10","9","8","7"], ["6","5","4","3","2"], ["🔙 رجوع"]]
@@ -234,7 +260,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("predict_step") == "real_winner":
         real_winner = text
 
-        # حفظ البيانات
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("""
@@ -247,8 +272,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
         increment_daily_count(user_id)
-
-        # حفظ آخر ضربة للجولة القادمة
         context.user_data["last_real_winner"] = real_winner
 
         await update.message.reply_text("شكرا لك! ✅ تم حفظ النتيجة الحقيقية.")
