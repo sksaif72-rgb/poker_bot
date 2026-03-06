@@ -5,7 +5,7 @@ import pytz
 import psycopg2
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from collections import Counter
+from collections import Counter, defaultdict
 
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -77,202 +77,388 @@ def check_subscription(user_id):
     return data and datetime.datetime.now() < data[0]
 
 
-# ==================== AI ====================
-def database_prediction(rank, suit, previous_winner="none"):
-    tz = pytz.timezone("Asia/Riyadh")
-    hour = datetime.datetime.now(tz).hour
+# ==================== AI SYSTEM ====================
+
+def load_recent_data(limit=500):
     conn = get_conn()
     cursor = conn.cursor()
+
     cursor.execute("""
-        SELECT winner_type, hand_type FROM training_data
-        WHERE card_rank=%s AND card_suit=%s AND previous_winner_type=%s
-    """, (rank, suit, previous_winner))
+    SELECT card_rank, card_suit, winner_type, previous_winner_type
+    FROM training_data
+    ORDER BY id DESC
+    LIMIT %s
+    """,(limit,))
+
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
-
-    winner_counter = Counter()
-    hand_counter = Counter()
-    for row in rows:
-        winner_counter[row[0]] += 1
-        for h in row[1]:
-            hand_counter[h] += 1
-    return winner_counter, hand_counter, len(rows)
+    return rows
 
 
+# -------- Pattern AI --------
+def pattern_ai(rank,suit,previous):
+    data = load_recent_data()
+
+    counter = Counter()
+
+    for r in data:
+        if r[0]==rank and r[1]==suit and r[3]==previous:
+            counter[r[2]]+=1
+
+    return counter
+
+
+# -------- Frequency AI --------
+def frequency_ai(rank,suit):
+    data = load_recent_data()
+
+    counter = Counter()
+
+    for r in data:
+        if r[0]==rank and r[1]==suit:
+            counter[r[2]]+=1
+
+    return counter
+
+
+# -------- Recency Weight AI --------
+def recency_ai(rank,suit,previous):
+
+    data = load_recent_data()
+
+    counter = Counter()
+
+    weight = len(data)
+
+    for r in data:
+        if r[0]==rank and r[1]==suit and r[3]==previous:
+            counter[r[2]]+=weight
+
+        weight-=1
+
+    return counter
+
+
+# -------- Markov Chain --------
+def markov_chain(previous):
+
+    data = load_recent_data()
+
+    counter = Counter()
+
+    for r in data:
+        if r[3]==previous:
+            counter[r[2]]+=1
+
+    return counter
+
+
+# -------- Monte Carlo --------
 def monte_carlo_prediction():
-    winner_options = ["زوجين", "متتالية", "فل هاوس", "ثلاثة", "اربعة"]
-    hand_options = ["متتالية نفس النوع", "زوج", "دبل AA", "ولا شيء"]
-    w = Counter(); h = Counter()
-    for _ in range(15000):
-        w[random.choice(winner_options)] += 1
-        h[random.choice(hand_options)] += 1
-    return w, h
+    options = ["زوجين","متتالية","فل هاوس","ثلاثة","اربعة"]
+
+    counter = Counter()
+
+    for _ in range(10000):
+        counter[random.choice(options)]+=1
+
+    return counter
 
 
-def combine_predictions(db_w, db_h, mc_w, mc_h, db_count):
-    weight = 0.85 if db_count >= 10 else 0.70 if db_count >= 5 else 0.50
-    final_w = Counter(); final_h = Counter()
-    for k, v in db_w.items(): final_w[k] += v * weight
-    for k, v in mc_w.items(): final_w[k] += v * (1 - weight)
-    for k, v in db_h.items(): final_h[k] += v * weight
-    for k, v in mc_h.items(): final_h[k] += v * (1 - weight)
-    return final_w, final_h
+# -------- Combine All --------
+def ai_prediction(rank,suit,previous):
+
+    p = pattern_ai(rank,suit,previous)
+    f = frequency_ai(rank,suit)
+    r = recency_ai(rank,suit,previous)
+    m = markov_chain(previous)
+    mc = monte_carlo_prediction()
+
+    final = Counter()
+
+    for k,v in p.items():
+        final[k]+=v*3
+
+    for k,v in f.items():
+        final[k]+=v*2
+
+    for k,v in r.items():
+        final[k]+=v*4
+
+    for k,v in m.items():
+        final[k]+=v*2
+
+    for k,v in mc.items():
+        final[k]+=v*1
+
+    return final
 
 
 def top_predictions(counter):
     total = sum(counter.values())
-    if total == 0: return []
-    return [(name, round(val/total*100, 2)) for name, val in counter.most_common(2)]
+
+    if total==0:
+        return []
+
+    return [(k,round(v/total*100,2)) for k,v in counter.most_common(2)]
 
 
 # ==================== START ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [["👤 اشتراك"], ["🎓 مدرب"], ["🔙 رجوع"]]
+
+    keyboard=[["👤 اشتراك"],["🎓 مدرب"],["🔙 رجوع"]]
+
     await update.message.reply_text(
         "اهلا وسهلا بوت تكساس ويبلاي ♠️\n\n"
         "نحن هنا لنساعدك على اتخاذ قرارات أقوى في اللعب.\n\n"
         "اختر نوع الحساب لنبدأ معاً:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        reply_markup=ReplyKeyboardMarkup(keyboard,resize_keyboard=True)
     )
 
 
 # ==================== MESSAGE HANDLER ====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     text = update.message.text.strip()
     user_id = update.message.from_user.id
 
-    if text in ["🔙 رجوع", "رجوع", "BACK"]:
+
+    if text in ["🔙 رجوع","رجوع","BACK"]:
         context.user_data.clear()
-        await start(update, context)
+        await start(update,context)
         return
 
-    # اشتراك
-    if text in ["👤 اشتراك", "اشتراك"]:
-        context.user_data["role"] = "user"
+
+    if text in ["👤 اشتراك","اشتراك"]:
+        context.user_data["role"]="user"
         await update.message.reply_text("يرجى إرسال كود الاشتراك الآن:")
         return
 
-    # مدرب
-    if text in ["🎓 مدرب", "مدرب"]:
-        context.user_data["role"] = "trainer"
+
+    if text in ["🎓 مدرب","مدرب"]:
+        context.user_data["role"]="trainer"
         await update.message.reply_text("يرجى إرسال كود المدرب الآن:")
         return
 
-    # ==================== تفعيل الكود ====================
-    role = context.user_data.get("role")
+
+# ==================== CODE ACTIVATION ====================
+
+    role=context.user_data.get("role")
+
     if role:
-        code = text
-        conn = get_conn()
-        cursor = conn.cursor()
-        table = "user_codes" if role == "user" else "trainer_codes"
-        cursor.execute(f"SELECT days FROM {table} WHERE code=%s", (code,))
-        result = cursor.fetchone()
+
+        code=text
+
+        conn=get_conn()
+        cursor=conn.cursor()
+
+        table="user_codes" if role=="user" else "trainer_codes"
+
+        cursor.execute(f"SELECT days FROM {table} WHERE code=%s",(code,))
+
+        result=cursor.fetchone()
 
         if result:
-            days = result[0]
-            expire = datetime.datetime.now() + datetime.timedelta(days=days)
+
+            days=result[0]
+
+            expire=datetime.datetime.now()+datetime.timedelta(days=days)
+
             cursor.execute("""
-                INSERT INTO users (telegram_id, role, expire_date)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (telegram_id) DO UPDATE SET expire_date = %s
-            """, (user_id, role, expire, expire))
+            INSERT INTO users (telegram_id,role,expire_date)
+            VALUES (%s,%s,%s)
+            ON CONFLICT (telegram_id)
+            DO UPDATE SET expire_date=%s
+            """,(user_id,role,expire,expire))
+
             conn.commit()
 
-            if role == "user":
-                kb = [["🔮 التخمين"]]
-                await update.message.reply_text(f"مبروك! تم تفعيل اشتراكك لمدة {days} يوم.", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+            if role=="user":
+
+                kb=[["🔮 التخمين"]]
+
+                await update.message.reply_text(
+                    f"مبروك! تم تفعيل اشتراكك لمدة {days} يوم.",
+                    reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+                )
+
             else:
-                # مدرب → يدخل وضع التدريب فوراً
-                kb = [["🎯 تدريب"]]
-                await update.message.reply_text(f"مبروك! تم تفعيل حساب المدرب لمدة {days} يوم.\n\nاضغط على الزر أدناه لتبدأ التدريب:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+
+                kb=[["🎯 تدريب"]]
+
+                await update.message.reply_text(
+                    f"مبروك! تم تفعيل حساب المدرب لمدة {days} يوم.\n\nاضغط على الزر أدناه لتبدأ التدريب:",
+                    reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+                )
+
             context.user_data.clear()
+
         else:
+
             await update.message.reply_text("الكود غير صحيح.")
+
         cursor.close()
         conn.close()
+
         return
 
-    # ==================== وضع التدريب (مكتمل الآن) ====================
-    if text in ["🎯 تدريب", "تدريب"]:
+
+# ==================== TRAINING ====================
+
+    if text in ["🎯 تدريب","تدريب"]:
+
         context.user_data.clear()
-        context.user_data["flow"] = "training"
-        context.user_data["training_step"] = "rank"
-        kb = [["A","K","Q","J"], ["10","9","8","7"], ["6","5","4","3","2"], ["🔙 رجوع"]]
-        await update.message.reply_text("اختر رقم الورقة:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+        context.user_data["training_step"]="rank"
+
+        kb=[["A","K","Q","J"],["10","9","8","7"],["6","5","4","3","2"],["🔙 رجوع"]]
+
+        await update.message.reply_text(
+            "اختر رقم الورقة:",
+            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+        )
+
         return
 
-    # خطوات التدريب الكاملة
-    if context.user_data.get("training_step") == "rank":
-        context.user_data["rank"] = text
-        context.user_data["training_step"] = "suit"
-        kb = [["♠️","♥️"], ["♦️","♣️"], ["🔙 رجوع"]]
-        await update.message.reply_text("اختر نوع الورقة:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+
+    if context.user_data.get("training_step")=="rank":
+
+        context.user_data["rank"]=text
+        context.user_data["training_step"]="suit"
+
+        kb=[["♠️","♥️"],["♦️","♣️"],["🔙 رجوع"]]
+
+        await update.message.reply_text(
+            "اختر نوع الورقة:",
+            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+        )
+
         return
 
-    if context.user_data.get("training_step") == "suit":
-        context.user_data["suit"] = text
-        context.user_data["training_step"] = "winner"
-        kb = [["زوجين","متتالية"], ["فل هاوس","ثلاثة"], ["اربعة"], ["🔙 رجوع"]]
-        await update.message.reply_text("ما الذي ضرب؟", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
+
+    if context.user_data.get("training_step")=="suit":
+
+        context.user_data["suit"]=text
+        context.user_data["training_step"]="winner"
+
+        kb=[["زوجين","متتالية"],["فل هاوس","ثلاثة"],["اربعة"],["🔙 رجوع"]]
+
+        await update.message.reply_text(
+            "ما الذي ضرب؟",
+            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+        )
+
         return
 
-    if context.user_data.get("training_step") == "winner":
-        context.user_data["winner"] = text
-        context.user_data["training_step"] = "hand"
-        context.user_data["hands"] = []
-        kb = [["متتالية نفس النوع","زوج"], ["دبل AA","ولا شيء"], ["✅ تم"], ["🔙 رجوع"]]
-        await update.message.reply_text("اختر نوع أوراق اليد (يمكن أكثر من واحد ثم اضغط تم):", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
-        return
 
-    if context.user_data.get("training_step") == "hand":
-        if text == "✅ تم":
-            rank = context.user_data["rank"]
-            suit = context.user_data["suit"]
-            winner = context.user_data["winner"]
-            hands = context.user_data["hands"]
+# ==================== USER PREDICTION ====================
 
-            conn = get_conn()
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO training_data 
-                (card_rank, card_suit, previous_hit, minute, winner_type, hand_type, previous_winner_type, source)
-                VALUES (%s, %s, 'false', %s, %s, %s, 'none', 'trainer')
-            """, (rank, suit, datetime.datetime.now().hour, winner, hands))
-            conn.commit()
-            cursor.close()
-            conn.close()
+    if text in ["🔮 التخمين","تخمين"]:
 
-            await update.message.reply_text("✅ تم حفظ التدريب بنجاح.\nشكراً لك!")
-            context.user_data.clear()
-            kb = [["🎯 تدريب"], ["🔙 رجوع"]]
-            await update.message.reply_text("اختر اللي تبغاه:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
-            return
-        else:
-            context.user_data["hands"].append(text)
-            await update.message.reply_text(f"تم إضافة: {text}")
+        if not check_subscription(user_id):
             return
 
-    # ==================== التخمين (للمستخدم) ====================
-    if text in ["🔮 التخمين", "تخمين"]:
-        if not check_subscription(user_id) or not check_daily_limit(user_id):
+        if not check_daily_limit(user_id):
             return
-        # ... (نفس الكود السابق للتخمين - إذا تبغاه كامل قل "كامل تخمين")
-        await update.message.reply_text("التخمين جاهز قريباً.")
+
+        context.user_data["predict_step"]="rank"
+
+        kb=[["A","K","Q","J"],["10","9","8","7"],["6","5","4","3","2"],["🔙 رجوع"]]
+
+        await update.message.reply_text(
+            "اختر رقم الورقة:",
+            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+        )
+
         return
+
+
+    if context.user_data.get("predict_step")=="rank":
+
+        context.user_data["rank"]=text
+        context.user_data["predict_step"]="suit"
+
+        kb=[["♠️","♥️"],["♦️","♣️"],["🔙 رجوع"]]
+
+        await update.message.reply_text(
+            "اختر نوع الورقة:",
+            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+        )
+
+        return
+
+
+    if context.user_data.get("predict_step")=="suit":
+
+        context.user_data["suit"]=text
+        context.user_data["predict_step"]="previous"
+
+        kb=[["زوجين","متتالية"],["فل هاوس","ثلاثة"],["اربعة"],["ولا شيء"],["🔙 رجوع"]]
+
+        await update.message.reply_text(
+            "ما آخر ضربة؟",
+            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+        )
+
+        return
+
+
+    if context.user_data.get("predict_step")=="previous":
+
+        rank=context.user_data["rank"]
+        suit=context.user_data["suit"]
+        previous=text
+
+        result=ai_prediction(rank,suit,previous)
+
+        top=top_predictions(result)
+
+        increment_daily_count(user_id)
+
+        if not top:
+
+            await update.message.reply_text("لا توجد بيانات كافية حالياً.")
+            return
+
+        msg="🔮 التوقع الأقرب:\n\n"
+
+        for name,prob in top:
+
+            msg+=f"{name} — {prob}%\n"
+
+        await update.message.reply_text(msg)
+
+        context.user_data.clear()
+
+        kb=[["🔮 التخمين"],["🔙 رجوع"]]
+
+        await update.message.reply_text(
+            "يمكنك التخمين مرة أخرى:",
+            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+        )
+
+        return
+
 
     await update.message.reply_text("يرجى اختيار من الكيبورد أو الضغط على 🔙 رجوع")
 
 
 # ==================== MAIN ====================
+
 def main():
-    threading.Thread(target=run_server, daemon=True).start()
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    threading.Thread(target=run_server,daemon=True).start()
+
+    app=ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start",start))
+
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_message))
+
     print("✅ بوت تكساس ويبلاي جاهز")
+
     app.run_polling(drop_pending_updates=True)
 
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
