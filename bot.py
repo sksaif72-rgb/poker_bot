@@ -94,3 +94,52 @@ def database_prediction(rank, suit, previous_hit, minute):
     hand_counter = Counter(hands)
 
     return winner_counter, hand_counter
+# ================================
+# COMBINE AI (80% DB + 20% MONTE CARLO)
+# ================================
+
+def combine_predictions(rank, suit, previous_hit, minute):
+
+    db_winner, db_hand = database_prediction(rank, suit, previous_hit, minute)
+
+    monte_winner, monte_hand = monte_carlo_prediction()
+
+    winner_scores = Counter()
+    hand_scores = Counter()
+
+    # 80% Database
+    if db_winner:
+        for k, v in db_winner.items():
+            winner_scores[k] += v * 0.8
+
+    if db_hand:
+        for k, v in db_hand.items():
+            hand_scores[k] += v * 0.8
+
+    # 20% Monte Carlo
+    winner_scores[monte_winner] += 0.2
+    hand_scores[monte_hand] += 0.2
+
+    return winner_scores, hand_scores
+
+
+# ================================
+# TOP 2 PREDICTIONS
+# ================================
+
+def top_predictions(counter):
+
+    if not counter:
+        return []
+
+    total = sum(counter.values())
+
+    results = []
+
+    for k, v in counter.most_common(2):
+
+        percent = round((v / total) * 100)
+
+        results.append((k, percent))
+
+    return results
