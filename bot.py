@@ -284,6 +284,69 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
 
+# ---------------- TRAINING SYSTEM ----------------
+
+    if text == "🎯 تدريب":
+
+        context.user_data["training_step"] = "rank"
+
+        keyboard = [
+            ["A","K","Q","J"],
+            ["10","9","8","7"],
+            ["6","5","4","3","2"]
+        ]
+
+        await update.message.reply_text(
+            "اختر رقم الورقة للتدريب",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        return
+
+
+    if context.user_data.get("training_step") == "rank":
+
+        context.user_data["rank"] = text
+        context.user_data["training_step"] = "suit"
+
+        keyboard = [
+            ["♠️","♥️"],
+            ["♦️","♣️"]
+        ]
+
+        await update.message.reply_text(
+            "اختر نوع الورقة",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        return
+
+
+    if context.user_data.get("training_step") == "suit":
+
+        rank = context.user_data.get("rank")
+        suit = text
+
+        conn = get_conn()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        INSERT INTO training_data(card_rank,card_suit,previous_hit,minute,winner_type,hand_type)
+        VALUES(%s,%s,%s,%s,%s,%s)
+        """,(rank,suit,False,datetime.datetime.now().minute,"unknown",["unknown"]))
+
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            f"تم تسجيل التدريب للورقة {rank} {suit}"
+        )
+
+        return
+
+
 # PREDICTION
     if text == "🔮 التخمين":
 
@@ -316,7 +379,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 def main():
 
-    # render port
     threading.Thread(target=run_server).start()
 
     app = ApplicationBuilder().token(TOKEN).build()
