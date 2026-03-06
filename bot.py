@@ -3,16 +3,37 @@ import random
 import datetime
 import pytz
 import psycopg2
+import threading
+
+from flask import Flask
 from collections import Counter
 
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
+
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+
 conn = psycopg2.connect(DATABASE_URL)
 cursor = conn.cursor()
+
+
+# ==============================
+# WEB SERVER FOR RENDER
+# ==============================
+
+web_app = Flask(__name__)
+
+@web_app.route("/")
+def home():
+    return "Poker bot running"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
+
 
 # ==============================
 # LIMIT SYSTEM (2 per minute)
@@ -90,7 +111,7 @@ def database_prediction(rank, suit, previous):
 
 
 # ==============================
-# MONTE CARLO SIMULATION
+# MONTE CARLO
 # ==============================
 
 def monte_carlo_prediction():
@@ -113,7 +134,7 @@ def monte_carlo_prediction():
 
 
 # ==============================
-# COMBINE AI
+# COMBINE
 # ==============================
 
 def combine_predictions(db_winner, db_hand, mc_winner, mc_hand):
@@ -137,7 +158,7 @@ def combine_predictions(db_winner, db_hand, mc_winner, mc_hand):
 
 
 # ==============================
-# TOP 2 RESULTS
+# TOP RESULTS
 # ==============================
 
 def top_predictions(counter):
@@ -154,7 +175,6 @@ def top_predictions(counter):
     for name,val in top:
 
         percent = round((val/total)*100,2)
-
         results.append((name,percent))
 
     return results
@@ -170,35 +190,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
 
 
-# ==============================
 # SUBSCRIBE
-# ==============================
 
     if text == "👤 اشتراك":
 
         context.user_data["role"] = "user"
 
         await update.message.reply_text("ارسل كود الاشتراك")
-
         return
 
 
-# ==============================
 # TRAINER
-# ==============================
 
     if text == "🎓 مدرب":
 
         context.user_data["role"] = "trainer"
 
         await update.message.reply_text("ارسل كود المدرب")
-
         return
 
 
-# ==============================
 # CODE CHECK
-# ==============================
 
     role = context.user_data.get("role")
 
@@ -256,28 +268,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             context.user_data.clear()
-
             return
 
         else:
 
             await update.message.reply_text("الكود غير صحيح")
-
             return
 
 
-# ==============================
-# PREDICTION START
-# ==============================
+# START PREDICTION
 
     if text == "🔮 التخمين":
 
         if not check_limit(user_id):
 
-            await update.message.reply_text(
-                "وصلت الحد الاقصى للتخمين في هذه الدقيقة"
-            )
-
+            await update.message.reply_text("وصلت الحد الاقصى للتخمين في هذه الدقيقة")
             return
 
         context.user_data["step"] = "rank"
@@ -296,9 +301,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-# ==============================
 # RANK
-# ==============================
 
     if context.user_data.get("step") == "rank":
 
@@ -318,9 +321,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-# ==============================
 # SUIT
-# ==============================
 
     if context.user_data.get("step") == "suit":
 
@@ -341,9 +342,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
-# ==============================
 # FINAL PREDICTION
-# ==============================
 
     if context.user_data.get("step") == "previous":
 
@@ -376,7 +375,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for h in hand:
             message += f"{h[0]} : {h[1]}%\n"
 
-        keyboard = [["🔮 التخمين التالي"]]
+        keyboard = [["🔮 التخمين"]]
 
         await update.message.reply_text(
             message,
@@ -384,19 +383,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         context.user_data.clear()
-
         return
 
 
 # ==============================
-# APP
+# RUN BOT
 # ==============================
 
-app = ApplicationBuilder().token(TOKEN).build()
+def main():
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT, handle_message))
+    threading.Thread(target=run_web).start()
 
-print("BOT STARTED")
+    app = ApplicationBuilder().token(TOKEN).build()
 
-app.run_polling()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT, handle_message))
+
+    print("BOT STARTED")
+
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
