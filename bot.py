@@ -748,10 +748,10 @@ async def trainer_confirm_hit(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     sessions[user_id]["hits"].append(fruit)
 
-    # بعد إدخال 6 ضرباتif len(sessions[user_id]["hits"]) == 6:
+    # 6 ربات
+    if len(sessions[user_id]["hits"]) == 6:
 
     sequence = sessions[user_id]["hits"]
-
     seq_text = " ".join(sequence)
 
     keyboard = []
