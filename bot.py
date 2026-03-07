@@ -1,309 +1,902 @@
-import os
+import logging
+import psycopg2
 import json
-import random
-import datetime
-import asyncpg
-import threading
+from datetime import datetime, timedelta
 
-from flask import Flask
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup
-from aiogram.utils import executor
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton
+)
 
-TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters
+)
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher(bot)
+# =========================
+# CONFIG
+# =========================
 
-# WEB SERVER
+TOKEN = "PUT_TELEGRAM_TOKEN"
+DATABASE_URL = "PUT_NEON_DATABASE_URL"
 
-app = Flask(__name__)
+# =========================
+# LOGGING
+# =========================
 
-@app.route("/")
-def home():
-    return "Bot Running"
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 
-def run_web():
-    port = int(os.environ.get("PORT",10000))
-    app.run(host="0.0.0.0",port=port)
+# =========================
+# DATABASE
+# =========================
 
-# OPTIONS
+conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 
-OPTIONS = [
-"🍉 بطيخ",
-"🍎 تفاح",
-"🍊 برتقال",
-"🐟 سمك",
-"🍤 روبيان",
-"🍔 برغر",
-"🥬 خس",
-"🍗 دجاج"
+# =========================
+# GAME OPTIONS
+# =========================
+
+ITEMS = [
+    "🍎",
+    "🍊",
+    "🥬",
+    "🍉",
+    "🐟",
+    "🍔",
+    "🍤",
+    "🍗"
 ]
 
-pool=None
-user_state={}
-user_sequences={}
-trainer_state={}
+# =========================
+# USER SESSION
+# =========================
 
-# DATABASE
+sessions = {}
 
-async def connect_db():
-    global pool
-    pool=await asyncpg.create_pool(DATABASE_URL)
+# =========================
+# DATABASE FUNCTIONS
+# =========================
 
-# KEYBOARDS
+def get_user(telegram_id):
 
-def main_menu():
-    kb=ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("🎯 توقع الجولة")
-    kb.add("🎟 تفعيل كود")
-    kb.add("👨‍🏫 لوحة المدرب")
-    return kb
+    cur = conn.cursor()
 
-def hits_keyboard():
-    kb=ReplyKeyboardMarkup(resize_keyboard=True)
-    for h in OPTIONS:
-        kb.add(h)
-    kb.add("↩️ رجوع")
-    return kb
-
-# START
-
-@dp.message_handler(commands=['start'])
-async def start(msg:types.Message):
-
-    async with pool.acquire() as conn:
-        await conn.execute(
-        "INSERT INTO users (telegram_id) VALUES($1) ON CONFLICT DO NOTHING",
-        msg.from_user.id)
-
-    await msg.answer(
-    "🎮 مرحبا بك في بوت التوقعات",
-    reply_markup=main_menu()
+    cur.execute(
+        "SELECT role, subscription_end FROM users WHERE telegram_id=%s",
+        (telegram_id,)
     )
 
-# CHECK SUB
+    user = cur.fetchone()
 
-async def check_subscription(user_id):
+    cur.close()
 
-    async with pool.acquire() as conn:
+    return user
 
-        row=await conn.fetchrow(
-        "SELECT subscription_end FROM users WHERE telegram_id=$1",
-        user_id)
 
-    if not row:
-        return False
+def create_user(telegram_id):
 
-    if not row["subscription_end"]:
-        return False
+    cur = conn.cursor()
 
-    return row["subscription_end"]>datetime.datetime.now()
-
-# START PREDICTION
-
-@dp.message_handler(lambda m:m.text=="🎯 توقع الجولة")
-async def start_prediction(msg:types.Message):
-
-    sub=await check_subscription(msg.from_user.id)
-
-    if not sub:
-        await msg.answer("❌ يجب الاشتراك اولا")
-        return
-
-    user_sequences[msg.from_user.id]=[]
-
-    user_state[msg.from_user.id]="sequence"
-
-    await msg.answer(
-    "ادخل اخر 6 ضربات\nاختر الضربة 1",
-    reply_markup=hits_keyboard()
+    cur.execute(
+        """
+        INSERT INTO users (telegram_id)
+        VALUES (%s)
+        ON CONFLICT (telegram_id) DO NOTHING
+        """,
+        (telegram_id,)
     )
 
-# SEQUENCE INPUT
+    conn.commit()
 
-@dp.message_handler(lambda m:m.text in OPTIONS and user_state.get(m.from_user.id)=="sequence")
-async def sequence_input(msg:types.Message):
+    cur.close()
 
-    seq=user_sequences[msg.from_user.id]
-    seq.append(msg.text)
 
-    if len(seq)<6:
+def check_subscription(telegram_id):
 
-        await msg.answer(f"الضربة {len(seq)+1}")
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT subscription_end FROM users WHERE telegram_id=%s",
+        (telegram_id,)
+    )
+
+    r = cur.fetchone()
+
+    cur.close()
+
+    if not r:
+        return False
+
+    if r[0] is None:
+        return False
+
+    return r[0] > datetime.now()
+
+
+def activate_code(telegram_id, code):
+
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT days, used, max_use FROM codes WHERE code=%s",
+        (code,)
+    )
+
+    data = cur.fetchone()
+
+    if not data:
+        cur.close()
+        return False, "❌ الكود غير صحيح"
+
+    days, used, max_use = data
+
+    if used >= max_use:
+        cur.close()
+        return False, "❌ الكود منتهي"
+
+    end_date = datetime.now() + timedelta(days=days)
+
+    cur.execute(
+        """
+        UPDATE users
+        SET subscription_end=%s
+        WHERE telegram_id=%s
+        """,
+        (end_date, telegram_id)
+    )
+
+    cur.execute(
+        "UPDATE codes SET used = used + 1 WHERE code=%s",
+        (code,)
+    )
+
+    conn.commit()
+
+    cur.close()
+
+    return True, f"✅ تم تفعيل الاشتراك {days} يوم"
+
+
+# =========================
+# START COMMAND
+# =========================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user_id = update.message.from_user.id
+
+    create_user(user_id)
+
+    keyboard = [
+
+        [KeyboardButton("🎯 توقع الجولة")],
+        [KeyboardButton("🎟 تفعيل كود")],
+        [KeyboardButton("👨‍🏫 لوحة المدرب")]
+
+    ]
+
+    await update.message.reply_text(
+
+        "مرحبا بك في بوت التوقعات الذكي",
+
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard,
+            resize_keyboard=True
+        )
+    )
+
+
+# =========================
+# SUBSCRIPTION CODE INPUT
+# =========================
+
+async def ask_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    await update.message.reply_text(
+        "ادخل كود الاشتراك"
+    )
+
+    sessions[update.message.from_user.id] = {
+        "mode": "code"
+    }
+
+
+async def receive_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user_id = update.message.from_user.id
+
+    if user_id not in sessions:
+        return
+
+    if sessions[user_id]["mode"] != "code":
+        return
+
+    code = update.message.text.strip()
+
+    ok, msg = activate_code(user_id, code)
+
+    await update.message.reply_text(msg)
+
+    sessions.pop(user_id)
+
+
+# =========================
+# WARNING BEFORE GUESS
+# =========================
+
+async def guess_warning(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user_id = update.message.from_user.id
+
+    if not check_subscription(user_id):
+
+        await update.message.reply_text(
+            "❌ يجب الاشتراك أولاً"
+        )
 
         return
 
-    user_state[msg.from_user.id]="predict"
+    keyboard = [
 
-    await predict(msg)
+        [InlineKeyboardButton(
+            "ابدأ",
+            callback_data="start_guess"
+        )]
 
+    ]
+
+    await update.message.reply_text(
+
+        "⚠️ تحذير\n\n"
+        "تأكد من إدخال الضربات بشكل صحيح.\n"
+        "إذا أخطأت استخدم زر الرجوع.",
+
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    # =========================
+# START GUESS
+# =========================
+
+async def start_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    sessions[user_id] = {
+        "mode": "guess",
+        "hits": []
+    }
+
+    await ask_hit(query.message, user_id)
+
+
+# =========================
+# ASK FOR HIT
+# =========================
+
+async def ask_hit(message, user_id):
+
+    step = len(sessions[user_id]["hits"]) + 1
+
+    keyboard = []
+
+    row = []
+
+    for item in ITEMS:
+
+        row.append(
+            InlineKeyboardButton(
+                item,
+                callback_data=f"hit_{item}"
+            )
+        )
+
+        if len(row) == 4:
+            keyboard.append(row)
+            row = []
+
+    keyboard.append(
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_hit")]
+    )
+
+    await message.reply_text(
+
+        f"اختر الضربة رقم {step}",
+
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# =========================
+# HIT SELECTED
+# =========================
+
+async def hit_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    fruit = query.data.split("_")[1]
+
+    keyboard = [
+
+        [InlineKeyboardButton(
+            "✅ تم",
+            callback_data=f"confirm_hit_{fruit}"
+        )],
+
+        [InlineKeyboardButton(
+            "🔙 رجوع",
+            callback_data="back_hit"
+        )]
+
+    ]
+
+    await query.edit_message_text(
+
+        f"اخترت {fruit}\n\nهل أنت متأكد؟",
+
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# =========================
+# CONFIRM HIT
+# =========================
+
+async def confirm_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    fruit = query.data.replace("confirm_hit_", "")
+
+    sessions[user_id]["hits"].append(fruit)
+
+    if len(sessions[user_id]["hits"]) < 6:
+
+        await ask_hit(query.message, user_id)
+
+    else:
+
+        await show_prediction(query.message, user_id)
+
+
+# =========================
+# BACK BUTTON
+# =========================
+
+async def back_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    if user_id not in sessions:
+        return
+
+    hits = sessions[user_id]["hits"]
+
+    if hits:
+        hits.pop()
+
+    await ask_hit(query.message, user_id)
+    # =========================
 # PREDICTION ENGINE
+# =========================
 
-async def predict(msg):
+def predict_sequence(sequence):
 
-    seq=user_sequences[msg.from_user.id]
+    scores = {item: 0 for item in ITEMS}
 
-    scores={o:0 for o in OPTIONS}
+    cur = conn.cursor()
 
-    async with pool.acquire() as conn:
+    # =========================
+    # TRAINING DATA
+    # =========================
 
-        rows=await conn.fetch("SELECT sequence,next_hit FROM training_data")
+    cur.execute("SELECT sequence, next_hit FROM training_data")
 
-        for r in rows:
+    rows = cur.fetchall()
 
-            db_seq=r["sequence"]
-            next_hit=r["next_hit"]
+    for seq_json, next_hit in rows:
 
-            # FULL MATCH
+        seq = list(seq_json)
 
-            if db_seq==seq:
-                scores[next_hit]+=20
+        # تطابق 6 ضربات
+        if seq == sequence:
+            scores[next_hit] += 100
 
-            # PARTIAL MATCH
+        # تطابق 4 ضربات
+        if seq[-4:] == sequence[-4:]:
+            scores[next_hit] += 50
 
-            match=sum([1 for i in range(6) if db_seq[i]==seq[i]])
+        # تطابق ضربتين
+        if seq[-2:] == sequence[-2:]:
+            scores[next_hit] += 20
 
-            if match>=4:
-                scores[next_hit]+=10
+        # آخر ضربة
+        if seq[-1] == sequence[-1]:
+            scores[next_hit] += 10
 
-            # LAST HIT
+    # =========================
+    # USER RESULTS
+    # =========================
 
-            if db_seq[-1]==seq[-1]:
-                scores[next_hit]+=5
+    cur.execute("SELECT last_hit, real_result FROM user_results")
 
-        # USER RESULTS
+    rows = cur.fetchall()
 
-        rows2=await conn.fetch("SELECT sequence,real_result FROM user_results")
+    for last_hit, result in rows:
 
-        for r in rows2:
+        if last_hit == sequence[-1]:
 
-            if r["sequence"]==seq:
+            scores[result] += 5
 
-                scores[r["real_result"]]+=6
+    cur.close()
 
-    for o in OPTIONS:
-        scores[o]+=random.random()
+    # ترتيب النتائج
 
-    result=sorted(scores.items(),key=lambda x:x[1],reverse=True)
-
-    best=[x[0] for x in result[:4]]
-
-    text="🎯 التوقعات الأقوى\n\n"
-
-    for i,b in enumerate(best,1):
-        text+=f"{i}️⃣ {b}\n"
-
-    text+="\nبعد ظهور النتيجة اختر الضربة الحقيقية"
-
-    user_state[msg.from_user.id]="result"
-
-    await msg.answer(text,reply_markup=hits_keyboard())
-
-# SAVE RESULT
-
-@dp.message_handler(lambda m:m.text in OPTIONS and user_state.get(m.from_user.id)=="result")
-async def save_result(msg:types.Message):
-
-    seq=user_sequences[msg.from_user.id]
-    result=msg.text
-
-    async with pool.acquire() as conn:
-
-        await conn.execute(
-        "INSERT INTO user_results(telegram_id,sequence,real_result) VALUES($1,$2,$3)",
-        msg.from_user.id,
-        json.dumps(seq),
-        result
-        )
-
-    seq.pop(0)
-    seq.append(result)
-
-    await predict(msg)
-
-# TRAINER
-
-@dp.message_handler(lambda m:m.text=="👨‍🏫 لوحة المدرب")
-async def trainer_panel(msg:types.Message):
-
-    async with pool.acquire() as conn:
-
-        user=await conn.fetchrow(
-        "SELECT role FROM users WHERE telegram_id=$1",
-        msg.from_user.id)
-
-    if not user or user["role"]!="trainer":
-
-        await msg.answer("❌ هذه القائمة للمدربين فقط")
-        return
-
-    kb=ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("🧠 تدريب")
-    kb.add("↩️ رجوع")
-
-    await msg.answer("لوحة المدرب",reply_markup=kb)
-
-@dp.message_handler(lambda m:m.text=="🧠 تدريب")
-async def trainer_start(msg:types.Message):
-
-    trainer_state[msg.from_user.id]={"sequence":[]}
-
-    await msg.answer(
-    "ادخل 6 ضربات للتسلسل",
-    reply_markup=hits_keyboard()
+    sorted_items = sorted(
+        scores.items(),
+        key=lambda x: x[1],
+        reverse=True
     )
 
-@dp.message_handler(lambda m:m.text in OPTIONS)
-async def trainer_sequence(msg:types.Message):
+    return [item[0] for item in sorted_items]
 
-    state=trainer_state.get(msg.from_user.id)
 
-    if not state:
-        return
+# =========================
+# SHOW PREDICTION
+# =========================
 
-    seq=state["sequence"]
+async def show_prediction(message, user_id):
 
-    if len(seq)<6:
+    sequence = sessions[user_id]["hits"]
 
-        seq.append(msg.text)
+    predictions = predict_sequence(sequence)
 
-        if len(seq)==6:
-            await msg.answer("اختر الضربة التالية")
-        else:
-            await msg.answer(f"الضربة {len(seq)+1}")
+    text = "🎯 التوقعات الأقوى\n\n"
 
-        return
+    for i, p in enumerate(predictions[:4]):
 
-    next_hit=msg.text
+        text += f"{i+1}️⃣ {p}\n"
 
-    async with pool.acquire() as conn:
+    text += "\nاختر النتيجة الحقيقية"
 
-        await conn.execute(
-        "INSERT INTO training_data(sequence,next_hit,trainer_id) VALUES($1,$2,$3)",
-        json.dumps(seq),
-        next_hit,
-        msg.from_user.id
+    keyboard = []
+
+    row = []
+
+    for item in ITEMS:
+
+        row.append(
+            InlineKeyboardButton(
+                item,
+                callback_data=f"result_{item}"
+            )
         )
 
-    del trainer_state[msg.from_user.id]
+        if len(row) == 4:
+            keyboard.append(row)
+            row = []
 
-    await msg.answer("✅ تم حفظ التدريب")
+    await message.reply_text(
 
+        text,
+
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    # =========================
+# SAVE RESULT
+# =========================
+
+async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    result = query.data.replace("result_", "")
+
+    if user_id not in sessions:
+        return
+
+    sequence = sessions[user_id]["hits"]
+
+    cur = conn.cursor()
+
+    # حفظ نتيجة المستخدم
+
+    cur.execute(
+        """
+        INSERT INTO user_results
+        (telegram_id, last_hit, real_result)
+        VALUES (%s,%s,%s)
+        """,
+        (
+            user_id,
+            sequence[-1],
+            result
+        )
+    )
+
+    conn.commit()
+
+    cur.close()
+
+    # تحديث التسلسل للجولة القادمة
+
+    sequence.pop(0)
+    sequence.append(result)
+
+    sessions[user_id]["hits"] = sequence
+
+    # حساب توقعات جديدة
+
+    predictions = predict_sequence(sequence)
+
+    text = "🎯 الجولة الجديدة\n\n"
+
+    for i, p in enumerate(predictions[:4]):
+
+        text += f"{i+1}️⃣ {p}\n"
+
+    text += "\nاختر النتيجة الحقيقية"
+
+    keyboard = []
+
+    row = []
+
+    for item in ITEMS:
+
+        row.append(
+            InlineKeyboardButton(
+                item,
+                callback_data=f"result_{item}"
+            )
+        )
+
+        if len(row) == 4:
+            keyboard.append(row)
+            row = []
+
+    await query.message.reply_text(
+
+        text,
+
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    # =========================
+# TRAINER PANEL
+# =========================
+
+async def trainer_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user_id = update.message.from_user.id
+
+    user = get_user(user_id)
+
+    if not user:
+        await update.message.reply_text("❌ غير مسموح")
+        return
+
+    role = user[0]
+
+    if role != "trainer":
+        await update.message.reply_text("❌ هذه اللوحة للمدربين فقط")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("🧠 تدريب البوت", callback_data="trainer_start_training")]
+    ]
+
+    await update.message.reply_text(
+        "👨‍🏫 لوحة المدرب",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# =========================
+# START TRAINING
+# =========================
+
+async def trainer_start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    sessions[user_id] = {
+        "mode": "training",
+        "hits": []
+    }
+
+    await trainer_ask_hit(query.message, user_id)
+
+
+# =========================
+# ASK TRAIN HIT
+# =========================
+
+async def trainer_ask_hit(message, user_id):
+
+    step = len(sessions[user_id]["hits"]) + 1
+
+    keyboard = []
+    row = []
+
+    for item in ITEMS:
+
+        row.append(
+            InlineKeyboardButton(
+                item,
+                callback_data=f"train_hit_{item}"
+            )
+        )
+
+        if len(row) == 4:
+            keyboard.append(row)
+            row = []
+
+    keyboard.append(
+        [InlineKeyboardButton("🔙 رجوع", callback_data="train_back")]
+    )
+
+    await message.reply_text(
+        f"ادخل الضربة التدريبية رقم {step}",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# =========================
+# TRAIN HIT SELECT
+# =========================
+
+async def trainer_hit_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    fruit = query.data.replace("train_hit_", "")
+
+    keyboard = [
+
+        [InlineKeyboardButton("✅ تم", callback_data=f"train_confirm_{fruit}")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="train_back")]
+
+    ]
+
+    await query.edit_message_text(
+        f"اخترت {fruit}\nهل أنت متأكد؟",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# =========================
+# CONFIRM TRAIN HIT
+# =========================
+
+async def trainer_confirm_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    fruit = query.data.replace("train_confirm_", "")
+
+    sessions[user_id]["hits"].append(fruit)
+
+    if len(sessions[user_id]["hits"]) < 6:
+
+        await trainer_ask_hit(query.message, user_id)
+
+    else:
+
+        keyboard = []
+        row = []
+
+        for item in ITEMS:
+
+            row.append(
+                InlineKeyboardButton(
+                    item,
+                    callback_data=f"train_result_{item}"
+                )
+            )
+
+            if len(row) == 4:
+                keyboard.append(row)
+                row = []
+
+        await query.message.reply_text(
+            "اختر الضربة التالية الصحيحة",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+
+# =========================
+# TRAIN BACK
+# =========================
+
+async def trainer_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    if user_id not in sessions:
+        return
+
+    hits = sessions[user_id]["hits"]
+
+    if hits:
+        hits.pop()
+
+    await trainer_ask_hit(query.message, user_id)
+
+
+# =========================
+# SAVE TRAINING DATA
+# =========================
+
+async def trainer_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    result = query.data.replace("train_result_", "")
+
+    sequence = sessions[user_id]["hits"]
+
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO training_data
+        (last_hit, sequence, next_hit, trainer_id)
+        VALUES (%s,%s,%s,%s)
+        """,
+        (
+            sequence[-1],
+            json.dumps(sequence),
+            result,
+            user_id
+        )
+    )
+
+    conn.commit()
+    cur.close()
+
+    sessions.pop(user_id)
+
+    await query.message.reply_text(
+        "✅ تم حفظ التدريب بنجاح"
+    )
+    # =========================
+# MAIN FUNCTION
+# =========================
+
+def main():
+
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    # أوامر
+
+    app.add_handler(CommandHandler("start", start))
+
+    # أزرار القائمة
+
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex("🎟 تفعيل كود"),
+        ask_code
+    ))
+
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex("🎯 توقع الجولة"),
+        guess_warning
+    ))
+
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex("👨‍🏫 لوحة المدرب"),
+        trainer_panel
+    ))
+
+    # استقبال كود الاشتراك
+
+    app.add_handler(MessageHandler(
+        filters.TEXT,
+        receive_code
+    ))
+
+    # التخمين
+
+    app.add_handler(CallbackQueryHandler(
+        start_guess,
+        pattern="start_guess"
+    ))
+
+    app.add_handler(CallbackQueryHandler(
+        hit_selected,
+        pattern="^hit_"
+    ))
+
+    app.add_handler(CallbackQueryHandler(
+        confirm_hit,
+        pattern="^confirm_hit_"
+    ))
+
+    app.add_handler(CallbackQueryHandler(
+        back_hit,
+        pattern="back_hit"
+    ))
+
+    app.add_handler(CallbackQueryHandler(
+        save_result,
+        pattern="^result_"
+    ))
+
+    # التدريب
+
+    app.add_handler(CallbackQueryHandler(
+        trainer_start_training,
+        pattern="trainer_start_training"
+    ))
+
+    app.add_handler(CallbackQueryHandler(
+        trainer_hit_selected,
+        pattern="^train_hit_"
+    ))
+
+    app.add_handler(CallbackQueryHandler(
+        trainer_confirm_hit,
+        pattern="^train_confirm_"
+    ))
+
+    app.add_handler(CallbackQueryHandler(
+        trainer_back,
+        pattern="train_back"
+    ))
+
+    app.add_handler(CallbackQueryHandler(
+        trainer_save,
+        pattern="^train_result_"
+    ))
+
+    print("BOT STARTED")
+
+    app.run_polling()
+
+
+# =========================
 # RUN
+# =========================
 
-async def on_startup(dp):
-
-    await connect_db()
-
-    await bot.delete_webhook(drop_pending_updates=True)
-
-    print("Bot Running")
-
-if __name__=="__main__":
-
-    t=threading.Thread(target=run_web)
-    t.start()
-
-    executor.start_polling(dp,on_startup=on_startup)
+if __name__ == "__main__":
+    main()
+    
