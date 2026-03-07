@@ -424,14 +424,14 @@ async def back_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def predict_sequence(sequence):
 
-    scores = {item: 0 for item in ITEMS}
+    scores = {}
+
+    for item in ITEMS:
+        scores[item] = 0
 
     cur = conn.cursor()
 
-    # =========================
-    # TRAINING DATA
-    # =========================
-
+    # قراءة بيانات التدريب
     cur.execute("SELECT sequence, next_hit FROM training_data")
 
     rows = cur.fetchall()
@@ -439,33 +439,26 @@ def predict_sequence(sequence):
     for seq_json, next_hit in rows:
 
         seq = json.loads(seq_json)
-# تطابق كامل 6 ضربات
-if seq == sequence:
-    scores[next_hit] += 120
 
-# تطابق 5 ضربات
-if seq[-5:] == sequence[-5:]:
-    scores[next_hit] += 90
+        if seq == sequence:
+            scores[next_hit] += 120
 
-# تطابق 4 ضربات
-if seq[-4:] == sequence[-4:]:
-    scores[next_hit] += 70
+        if seq[-5:] == sequence[-5:]:
+            scores[next_hit] += 90
 
-# تطابق 3 ضربات
-if seq[-3:] == sequence[-3:]:
-    scores[next_hit] += 40
+        if seq[-4:] == sequence[-4:]:
+            scores[next_hit] += 70
 
-# تطابق ضربتين
-if seq[-2:] == sequence[-2:]:
-    scores[next_hit] += 20
+        if seq[-3:] == sequence[-3:]:
+            scores[next_hit] += 40
 
-# آخر ضربة فقط
-if seq[-1] == sequence[-1]:
-    scores[next_hit] += 10
-    # =========================
-    # USER RESULTS
-    # =========================
+        if seq[-2:] == sequence[-2:]:
+            scores[next_hit] += 20
 
+        if seq[-1] == sequence[-1]:
+            scores[next_hit] += 10
+
+    # قراءة نتائج المستخدمين
     cur.execute("SELECT last_hit, real_result FROM user_results")
 
     rows = cur.fetchall()
@@ -473,13 +466,11 @@ if seq[-1] == sequence[-1]:
     for last_hit, result in rows:
 
         if last_hit == sequence[-1]:
-
-            scores[result] += 5
+            scores[result] += 15
 
     cur.close()
 
     # ترتيب النتائج
-
     sorted_items = sorted(
         scores.items(),
         key=lambda x: x[1],
