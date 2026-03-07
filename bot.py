@@ -438,7 +438,7 @@ def predict_sequence(sequence):
 
     for seq_json, next_hit in rows:
 
-        seq = list(seq_json)
+        seq = json.loads(seq_json)
 
         # تطابق 6 ضربات
         if seq == sequence:
