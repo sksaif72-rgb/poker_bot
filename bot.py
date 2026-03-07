@@ -39,11 +39,14 @@ OPTIONS = [
 "🐟 سمك",
 "🍤 روبيان",
 "🍔 برغر",
-"🥬 خضار",
+"🥬 خس",
 "🍗 دجاج"
 ]
 
 pool = None
+
+# حفظ اخر ضربة للمستخدم
+last_hits = {}
 
 # ================= DATABASE =================
 
@@ -117,6 +120,16 @@ async def redeem_code(msg: types.Message):
 @dp.message_handler(lambda m: m.text == "🎯 توقع الجولة")
 async def predict_start(msg: types.Message):
 
+    async with pool.acquire() as conn:
+        user = await conn.fetchrow(
+        "SELECT subscription_end FROM users WHERE telegram_id=$1",
+        msg.from_user.id)
+
+    if not user or not user["subscription_end"] or user["subscription_end"] < datetime.datetime.now():
+
+        await msg.answer("❌ يجب تفعيل الاشتراك أولاً")
+        return
+
     await msg.answer(
     "اختر آخر ضربة ظهرت",
     reply_markup=hits_keyboard()
@@ -126,6 +139,7 @@ async def predict_start(msg: types.Message):
 async def predict(msg: types.Message):
 
     last_hit = msg.text
+    last_hits[msg.from_user.id] = last_hit
 
     async with pool.acquire() as conn:
 
@@ -151,9 +165,36 @@ async def predict(msg: types.Message):
     for i,b in enumerate(best,1):
         text += f"{i}️⃣ {b}\n"
 
-    text += "\n⚠️ التوقعات تحليل احتمالي وليست مضمونة."
+    text += "\nبعد ظهور النتيجة اكتب الضربة الحقيقية"
 
-    await msg.answer(text, reply_markup=main_menu())
+    await msg.answer(text, reply_markup=hits_keyboard())
+
+# ================= SAVE RESULT =================
+
+@dp.message_handler(lambda m: m.text in OPTIONS)
+async def save_result(msg: types.Message):
+
+    last_hit = last_hits.get(msg.from_user.id)
+
+    if not last_hit:
+        return
+
+    real_result = msg.text
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+        "INSERT INTO user_results(telegram_id,last_hit,real_result) VALUES($1,$2,$3)",
+        msg.from_user.id,
+        last_hit,
+        real_result
+        )
+
+    del last_hits[msg.from_user.id]
+
+    await msg.answer(
+    "✅ تم تسجيل النتيجة\n\nيمكنك بدء توقع جديد",
+    reply_markup=main_menu()
+    )
 
 # ================= TRAINER =================
 
@@ -218,10 +259,11 @@ async def trainer_sequence(msg: types.Message):
 
     async with pool.acquire() as conn:
         await conn.execute(
-        "INSERT INTO training_data(last_hit,sequence,next_hit) VALUES($1,$2,$3)",
+        "INSERT INTO training_data(last_hit,sequence,next_hit,trainer_id) VALUES($1,$2,$3,$4)",
         state["last_hit"],
         json.dumps(state["sequence"]),
-        next_hit
+        next_hit,
+        msg.from_user.id
         )
 
     del trainer_state[msg.from_user.id]
