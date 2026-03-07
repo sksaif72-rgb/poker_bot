@@ -439,23 +439,29 @@ def predict_sequence(sequence):
     for seq_json, next_hit in rows:
 
         seq = json.loads(seq_json)
+# تطابق كامل 6 ضربات
+if seq == sequence:
+    scores[next_hit] += 120
 
-        # تطابق 6 ضربات
-        if seq == sequence:
-            scores[next_hit] += 100
+# تطابق 5 ضربات
+if seq[-5:] == sequence[-5:]:
+    scores[next_hit] += 90
 
-        # تطابق 4 ضربات
-        if seq[-4:] == sequence[-4:]:
-            scores[next_hit] += 50
+# تطابق 4 ضربات
+if seq[-4:] == sequence[-4:]:
+    scores[next_hit] += 70
 
-        # تطابق ضربتين
-        if seq[-2:] == sequence[-2:]:
-            scores[next_hit] += 20
+# تطابق 3 ضربات
+if seq[-3:] == sequence[-3:]:
+    scores[next_hit] += 40
 
-        # آخر ضربة
-        if seq[-1] == sequence[-1]:
-            scores[next_hit] += 10
+# تطابق ضربتين
+if seq[-2:] == sequence[-2:]:
+    scores[next_hit] += 20
 
+# آخر ضربة فقط
+if seq[-1] == sequence[-1]:
+    scores[next_hit] += 10
     # =========================
     # USER RESULTS
     # =========================
