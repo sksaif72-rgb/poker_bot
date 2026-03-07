@@ -727,7 +727,6 @@ async def trainer_hit_selected(update: Update, context: ContextTypes.DEFAULT_TYP
 # =========================
 # CONFIRM TRAIN HIT
 # =========================
-
 async def trainer_confirm_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
@@ -735,43 +734,41 @@ async def trainer_confirm_hit(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     user_id = query.from_user.id
 
-    fruit = query.data.replace("train_confirm_", "")
+    fruit = query.data.replace("confirm_hit_", "")
 
     sessions[user_id]["hits"].append(fruit)
 
-    # 6 ربا
-    # 6 ضربات
-if len(sessions[user_id]["hits"]) == 6:
+    if len(sessions[user_id]["hits"]) == 6:
 
-    sequence = sessions[user_id]["hits"]
-    seq_text = " ".join(sequence)
+        sequence = sessions[user_id]["hits"]
+        seq_text = " ".join(sequence)
 
-    keyboard = []
-    row = []
+        keyboard = []
+        row = []
 
-    for item in ITEMS:
+        for item in ITEMS:
 
-        row.append(
-            InlineKeyboardButton(
-                item,
-                callback_data=f"train_result_{item}"
+            row.append(
+                InlineKeyboardButton(
+                    item,
+                    callback_data=f"train_result_{item}"
+                )
             )
+
+            if len(row) == 4:
+                keyboard.append(row)
+                row = []
+
+        await query.message.reply_text(
+            f"📊 بيانات التدريب\n\n"
+            f"التسلسل:\n{seq_text}\n\n"
+            f"اختر الضربة رقم 7",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-        if len(row) == 4:
-            keyboard.append(row)
-            row = []
+    else:
 
-    await query.message.reply_text(
-        f"📊 بيانات التدريب\n\n"
-        f"التسلسل:\n{seq_text}\n\n"
-        f"اختر الضربة رقم 7",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-else:
-
-    await trainer_ask_hit(query.message, user_id)
+        await trainer_ask_hit(query.message, user_id)
 # =========================
 # TRAIN BACK
 # =========================
