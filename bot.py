@@ -533,8 +533,7 @@ async def show_prediction(message, user_id):
     # =========================
 # SAVE RESULT
 # =========================
-
-        async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
     await query.answer()
