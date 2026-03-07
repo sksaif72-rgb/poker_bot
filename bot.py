@@ -24,9 +24,11 @@ from telegram.ext import (
 # CONFIG
 # =========================
 
-TOKEN = "PUT_TELEGRAM_TOKEN"
-DATABASE_URL = "PUT_NEON_DATABASE_URL"
+import os
 
+TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+ADMIN_ID = os.getenv("ADMIN_ID")
 # =========================
 # LOGGING
 # =========================
@@ -41,7 +43,6 @@ logging.basicConfig(
 # =========================
 
 conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-
 # =========================
 # GAME OPTIONS
 # =========================
