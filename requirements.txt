@@ -1,5 +1,3 @@
-python-telegram-bot==20.7
-psycopg2-binary
-pytz
-flask
-numpy
+aiogram==2.25.1
+asyncpg
+python-dotenv
