@@ -1,351 +1,221 @@
 import os
+import json
+import asyncio
 import datetime
-import psycopg2
-import threading
+import random
+import asyncpg
 
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from collections import Counter
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.utils import executor
 
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
+bot = Bot(token=TOKEN)
+dp = Dispatcher(bot)
 
-TOKEN=os.getenv("BOT_TOKEN")
-DATABASE_URL=os.getenv("DATABASE_URL")
+OPTIONS = [
+"🍉 بطيخ",
+"🍎 تفاح",
+"🍊 برتقال",
+"🐟 سمك",
+"🍤 روبيان",
+"🍔 برغر",
+"🥬 خضار",
+"🍗 دجاج"
+]
 
+pool = None
 
 # ================= DATABASE =================
 
-def get_conn():
-    return psycopg2.connect(DATABASE_URL,sslmode="require")
+async def connect_db():
+    global pool
+    pool = await asyncpg.create_pool(DATABASE_URL)
 
+# ================= KEYBOARDS =================
 
-# ================= SERVER =================
+def main_menu():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("🎯 توقع الجولة")
+    kb.add("🎟 تفعيل كود")
+    kb.add("👨‍🏫 لوحة المدرب")
+    return kb
 
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b'Bot running')
-
-
-def run_server():
-    port=int(os.environ.get("PORT",10000))
-    server=HTTPServer(("0.0.0.0",port),Handler)
-    server.serve_forever()
-
-
-# ================= SUBSCRIPTION =================
-
-def activate_user(user_id,days):
-
-    conn=get_conn()
-    cur=conn.cursor()
-
-    expire=datetime.datetime.now()+datetime.timedelta(days=days)
-
-    cur.execute("""
-    INSERT INTO users (telegram_id,expire_date)
-    VALUES (%s,%s)
-    ON CONFLICT (telegram_id)
-    DO UPDATE SET expire_date=%s
-    """,(user_id,expire,expire))
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def check_user_code(code):
-
-    conn=get_conn()
-    cur=conn.cursor()
-
-    cur.execute("SELECT days FROM user_codes WHERE code=%s",(code,))
-    r=cur.fetchone()
-
-    cur.close()
-    conn.close()
-
-    return r
-
-
-# ================= AI =================
-
-def load_data():
-
-    conn=get_conn()
-    cur=conn.cursor()
-
-    cur.execute("""
-    SELECT card_rank,card_suit,previous_winner_type,winner_type,minute
-    FROM training_data
-    ORDER BY id DESC
-    LIMIT 1000
-    """)
-
-    rows=cur.fetchall()
-
-    cur.close()
-    conn.close()
-
-    return rows
-
-
-def predict(rank,suit,previous,minute):
-
-    data=load_data()
-
-    c=Counter()
-
-    for r in data:
-
-        score=0
-
-        if r[0]==rank and r[1]==suit:
-            score+=3
-
-        if r[2]==previous:
-            score+=2
-
-        if r[4]==minute:
-            score+=4
-
-        if score>0:
-            c[r[3]]+=score
-
-    return c
-
-
-def save_training(rank,suit,previous,result,minute):
-
-    conn=get_conn()
-    cur=conn.cursor()
-
-    cur.execute("""
-    INSERT INTO training_data
-    (card_rank,card_suit,previous_winner_type,winner_type,minute)
-    VALUES (%s,%s,%s,%s,%s)
-    """,(rank,suit,previous,result,minute))
-
-    conn.commit()
-
-    cur.close()
-    conn.close()
-
+def hits_keyboard():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    for h in OPTIONS:
+        kb.add(h)
+    kb.add("↩️ رجوع")
+    return kb
 
 # ================= START =================
 
-async def start(update:Update,context:ContextTypes.DEFAULT_TYPE):
+@dp.message_handler(commands=['start'])
+async def start(msg: types.Message):
 
-    kb=[
-        ["👤 اشتراك"],
-        ["🎓 مدرب"]
-    ]
+    async with pool.acquire() as conn:
+        await conn.execute(
+        "INSERT INTO users (telegram_id) VALUES($1) ON CONFLICT DO NOTHING",
+        msg.from_user.id)
 
-    await update.message.reply_text(
-        "اهلا وسهلا بوت تكساس ♠️",
-        reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+    await msg.answer(
+    "🎮 مرحباً بك في بوت التوقعات",
+    reply_markup=main_menu()
     )
 
+# ================= SUBSCRIPTION =================
 
-# ================= HANDLER =================
+@dp.message_handler(lambda m: m.text == "🎟 تفعيل كود")
+async def redeem_code(msg: types.Message):
 
-async def handle(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    await msg.answer("اكتب كود الاشتراك")
 
-    text=update.message.text
-    user_id=update.message.from_user.id
+    @dp.message_handler()
+    async def process_code(message: types.Message):
 
+        code = message.text.strip()
 
-# -------- اشتراك --------
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+            "SELECT * FROM codes WHERE code=$1", code)
 
-    if text=="👤 اشتراك":
+            if not row:
+                await message.answer("❌ الكود غير صحيح")
+                return
 
-        context.user_data["step"]="user_code"
+            days = row["days"]
 
-        await update.message.reply_text("ادخل كود الاشتراك")
+            end = datetime.datetime.now() + datetime.timedelta(days=days)
 
+            await conn.execute(
+            "UPDATE users SET subscription_end=$1 WHERE telegram_id=$2",
+            end, message.from_user.id)
+
+            await message.answer("✅ تم تفعيل الاشتراك")
+
+# ================= PREDICTION =================
+
+@dp.message_handler(lambda m: m.text == "🎯 توقع الجولة")
+async def predict_start(msg: types.Message):
+
+    await msg.answer(
+    "اختر آخر ضربة ظهرت",
+    reply_markup=hits_keyboard()
+    )
+
+@dp.message_handler(lambda m: m.text in OPTIONS)
+async def predict(msg: types.Message):
+
+    last_hit = msg.text
+    minute = datetime.datetime.now().minute
+
+    async with pool.acquire() as conn:
+
+        rows = await conn.fetch(
+        "SELECT * FROM training_data WHERE last_hit=$1",
+        last_hit)
+
+    scores = {o:0 for o in OPTIONS}
+
+    for r in rows:
+        next_hit = r["next_hit"]
+        scores[next_hit] += 3
+
+    for o in OPTIONS:
+        scores[o] += random.random()
+
+    result = sorted(scores.items(), key=lambda x:x[1], reverse=True)
+
+    best = [x[0] for x in result[:4]]
+
+    text = "🎯 توقع الجولة القادمة\n\n"
+
+    for i,b in enumerate(best,1):
+        text += f"{i}️⃣ {b}\n"
+
+    text += "\n⚠️ التوقعات تحليل احتمالي وليست مضمونة."
+
+    await msg.answer(text, reply_markup=main_menu())
+
+# ================= TRAINER =================
+
+trainer_state = {}
+
+@dp.message_handler(lambda m: m.text == "👨‍🏫 لوحة المدرب")
+async def trainer_panel(msg: types.Message):
+
+    async with pool.acquire() as conn:
+        user = await conn.fetchrow(
+        "SELECT role FROM users WHERE telegram_id=$1",
+        msg.from_user.id)
+
+    if user["role"] != "trainer":
+        await msg.answer("❌ هذه القائمة للمدربين فقط")
         return
 
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("🧠 تدريب جديد")
+    kb.add("↩️ رجوع")
 
-    if context.user_data.get("step")=="user_code":
+    await msg.answer("لوحة المدرب", reply_markup=kb)
 
-        code=text
+@dp.message_handler(lambda m: m.text == "🧠 تدريب جديد")
+async def trainer_start(msg: types.Message):
 
-        r=check_user_code(code)
+    trainer_state[msg.from_user.id] = {
+        "sequence": []
+    }
 
-        if not r:
+    await msg.answer(
+    "اختر آخر ضربة قبل التسلسل",
+    reply_markup=hits_keyboard()
+    )
 
-            await update.message.reply_text("الكود غير صحيح")
-            return
+@dp.message_handler(lambda m: m.text in OPTIONS)
+async def trainer_sequence(msg: types.Message):
 
-        activate_user(user_id,r[0])
+    state = trainer_state.get(msg.from_user.id)
 
-        kb=[["🔮 التخمين"]]
-
-        await update.message.reply_text(
-            "تم تفعيل الاشتراك",
-            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
-        )
-
-        context.user_data["step"]=None
-
+    if not state:
         return
 
+    if "last_hit" not in state:
 
-# -------- المدرب --------
+        state["last_hit"] = msg.text
 
-    if "مدرب" in text:
-
-        kb=[["🔮 التخمين"]]
-
-        await update.message.reply_text(
-            "وضع المدرب مفعل",
-            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
-        )
-
+        await msg.answer("ابدأ إدخال التسلسل (6 ضربات)")
         return
 
+    if len(state["sequence"]) < 6:
 
-# -------- التخمين --------
+        state["sequence"].append(msg.text)
 
-    if text=="🔮 التخمين":
-
-        minute=datetime.datetime.now().minute
-
-        context.user_data["minute"]=minute
-        context.user_data["step"]="previous"
-
-        kb=[["زوجين","متتالية"],["ثلاثة","فل هاوس"],["اربعة"]]
-
-        await update.message.reply_text(
-            f"الدقيقة {minute}\nما اخر ضربة؟",
-            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
-        )
-
-        return
-
-
-# -------- الضربة السابقة --------
-
-    if context.user_data.get("step")=="previous":
-
-        context.user_data["previous"]=text
-        context.user_data["step"]="rank"
-
-        kb=[["A","K","Q","J"],["10","9","8","7"],["6","5","4","3","2"]]
-
-        await update.message.reply_text(
-            "اختر رقم الورقة",
-            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
-        )
-
-        return
-
-
-# -------- رقم الورقة --------
-
-    if context.user_data.get("step")=="rank":
-
-        context.user_data["rank"]=text
-        context.user_data["step"]="suit"
-
-        kb=[["♠️","♥️"],["♦️","♣️"]]
-
-        await update.message.reply_text(
-            "اختر نوع الورقة",
-            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
-        )
-
-        return
-
-
-# -------- نوع الورقة --------
-
-    if context.user_data.get("step")=="suit":
-
-        rank=context.user_data["rank"]
-        suit=text
-        previous=context.user_data["previous"]
-        minute=context.user_data["minute"]
-
-        context.user_data["suit"]=suit
-
-        result=predict(rank,suit,previous,minute)
-
-        total=sum(result.values())
-
-        if total==0:
-
-            await update.message.reply_text("لا يوجد بيانات كافية")
-
+        if len(state["sequence"]) == 6:
+            await msg.answer("اختر الضربة التالية")
         else:
-
-            msg="🔮 التحليل\n\n"
-
-            labels=["🔥 افضل تخمين","⚖️ تخمين وسط","⚠️ تخمين ضعيف"]
-
-            for i,(k,v) in enumerate(result.most_common(3)):
-
-                p=round(v/total*100,2)
-
-                msg+=f"{labels[i]}\n{k} — {p}%\n\n"
-
-            await update.message.reply_text(msg)
-
-
-        context.user_data["step"]="result"
-
-        kb=[["زوجين","متتالية"],["ثلاثة","فل هاوس"],["اربعة"]]
-
-        await update.message.reply_text(
-            "اختر الضربة الصحيحة",
-            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
-        )
-
+            await msg.answer(f"الضربة رقم {len(state['sequence'])+1}")
         return
 
+    next_hit = msg.text
 
-# -------- حفظ التدريب --------
-
-    if context.user_data.get("step")=="result":
-
-        rank=context.user_data["rank"]
-        suit=context.user_data["suit"]
-        previous=context.user_data["previous"]
-        minute=context.user_data["minute"]
-
-        save_training(rank,suit,previous,text,minute)
-
-        context.user_data["previous"]=text
-        context.user_data["step"]="rank"
-
-        kb=[["A","K","Q","J"],["10","9","8","7"],["6","5","4","3","2"]]
-
-        await update.message.reply_text(
-            "تم حفظ الضربة\nاختر رقم الورقة الجديدة",
-            reply_markup=ReplyKeyboardMarkup(kb,resize_keyboard=True)
+    async with pool.acquire() as conn:
+        await conn.execute(
+        "INSERT INTO training_data(last_hit,sequence,next_hit) VALUES($1,$2,$3)",
+        state["last_hit"],
+        json.dumps(state["sequence"]),
+        next_hit
         )
 
-        return
+    del trainer_state[msg.from_user.id]
 
+    await msg.answer("✅ تم حفظ التدريب", reply_markup=main_menu())
 
-# ================= MAIN =================
+# ================= RUN =================
 
-def main():
+async def on_startup(dp):
+    await connect_db()
 
-    threading.Thread(target=run_server,daemon=True).start()
-
-    app=ApplicationBuilder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start",start))
-
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle))
-
-    print("Bot Running")
-
-    app.run_polling()
-
-
-if __name__=="__main__":
-    main()
+if __name__ == "__main__":
+    executor.start_polling(dp, on_startup=on_startup)
