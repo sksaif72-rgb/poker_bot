@@ -4,9 +4,12 @@ import asyncio
 import datetime
 import random
 import asyncpg
+import threading
+
+from flask import Flask
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup
 from aiogram.utils import executor
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -14,6 +17,20 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
+
+# ================= WEB SERVER =================
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot is running"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# ================= OPTIONS =================
 
 OPTIONS = [
 "🍉 بطيخ",
@@ -109,7 +126,6 @@ async def predict_start(msg: types.Message):
 async def predict(msg: types.Message):
 
     last_hit = msg.text
-    minute = datetime.datetime.now().minute
 
     async with pool.acquire() as conn:
 
@@ -151,7 +167,7 @@ async def trainer_panel(msg: types.Message):
         "SELECT role FROM users WHERE telegram_id=$1",
         msg.from_user.id)
 
-    if user["role"] != "trainer":
+    if not user or user["role"] != "trainer":
         await msg.answer("❌ هذه القائمة للمدربين فقط")
         return
 
@@ -216,6 +232,12 @@ async def trainer_sequence(msg: types.Message):
 
 async def on_startup(dp):
     await connect_db()
+    await bot.delete_webhook(drop_pending_updates=True)
+    print("Bot Running")
 
 if __name__ == "__main__":
+
+    t = threading.Thread(target=run_web)
+    t.start()
+
     executor.start_polling(dp, on_startup=on_startup)
