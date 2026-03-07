@@ -729,34 +729,40 @@ async def trainer_confirm_hit(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     sessions[user_id]["hits"].append(fruit)
 
-    if len(sessions[user_id]["hits"]) < 6:
+    # بعد إدخال 6 ضرباتif len(sessions[user_id]["hits"]) == 6:
 
-        await trainer_ask_hit(query.message, user_id)
+    sequence = sessions[user_id]["hits"]
 
-    else:
+    seq_text = " ".join(sequence)
 
-        keyboard = []
-        row = []
+    keyboard = []
+    row = []
 
-        for item in ITEMS:
+    for item in ITEMS:
 
-            row.append(
-                InlineKeyboardButton(
-                    item,
-                    callback_data=f"train_result_{item}"
-                )
+        row.append(
+            InlineKeyboardButton(
+                item,
+                callback_data=f"train_result_{item}"
             )
-
-            if len(row) == 4:
-                keyboard.append(row)
-                row = []
-
-        await query.message.reply_text(
-            "اختر الضربة التالية الصحيحة",
-            reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
+        if len(row) == 4:
+            keyboard.append(row)
+            row = []
 
+    await query.message.reply_text(
+
+        f"📊 بيانات التدريب\n\n"
+        f"التسلسل:\n{seq_text}\n\n"
+        f"اختر الضربة رقم 7",
+
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+else:
+
+    await trainer_ask_hit(query.message, user_id)
 # =========================
 # TRAIN BACK
 # =========================
