@@ -3,6 +3,8 @@ import psycopg2
 import json
 from datetime import datetime, timedelta
 
+from flask import Flask
+from threading import Thread
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -29,6 +31,23 @@ import os
 TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = os.getenv("ADMIN_ID")
+# =========================
+# WEB SERVER (RENDER)
+# =========================
+
+app_web = Flask(__name__)
+
+@app_web.route("/")
+def home():
+    return "Bot is running"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app_web.run(host="0.0.0.0", port=port)
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.start()
 # =========================
 # LOGGING
 # =========================
@@ -805,8 +824,9 @@ async def trainer_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    keep_alive()
 
+    app = ApplicationBuilder().token(TOKEN).build()
     # أوامر
 
     app.add_handler(CommandHandler("start", start))
