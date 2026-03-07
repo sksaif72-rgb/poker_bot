@@ -748,8 +748,9 @@ async def trainer_confirm_hit(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     sessions[user_id]["hits"].append(fruit)
 
-    # 6 ربات
-    if len(sessions[user_id]["hits"]) == 6:
+    # 6 ربا
+    # 6 ضربات
+if len(sessions[user_id]["hits"]) == 6:
 
     sequence = sessions[user_id]["hits"]
     seq_text = " ".join(sequence)
@@ -771,11 +772,9 @@ async def trainer_confirm_hit(update: Update, context: ContextTypes.DEFAULT_TYPE
             row = []
 
     await query.message.reply_text(
-
         f"📊 بيانات التدريب\n\n"
         f"التسلسل:\n{seq_text}\n\n"
         f"اختر الضربة رقم 7",
-
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
