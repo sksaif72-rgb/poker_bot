@@ -534,7 +534,7 @@ async def show_prediction(message, user_id):
 # SAVE RESULT
 # =========================
 
-async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
     await query.answer()
@@ -553,17 +553,31 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # حفظ نتيجة المستخدم
 
     cur.execute(
-        """
-        INSERT INTO user_results
-        (telegram_id, last_hit, real_result)
-        VALUES (%s,%s,%s)
-        """,
-        (
-            user_id,
-            sequence[-1],
-            result
-        )
+    """
+    INSERT INTO user_results
+    (telegram_id, last_hit, real_result)
+    VALUES (%s,%s,%s)
+    """,
+    (
+        user_id,
+        sequence[-1],
+        result
     )
+)
+
+cur.execute(
+    """
+    INSERT INTO training_data
+    (last_hit, sequence, next_hit, trainer_id)
+    VALUES (%s,%s,%s,%s)
+    """,
+    (
+        sequence[-1],
+        json.dumps(sequence),
+        result,
+        user_id
+    )
+)
 
     conn.commit()
 
