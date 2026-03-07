@@ -1,12 +1,11 @@
 import os
 import json
-import datetime
 import random
+import datetime
 import asyncpg
 import threading
 
 from flask import Flask
-
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup
 from aiogram.utils import executor
@@ -43,9 +42,9 @@ OPTIONS = [
 ]
 
 pool = None
-
 user_state = {}
-last_hits = {}
+user_sequences = {}
+trainer_state = {}
 
 # ================= DATABASE =================
 
@@ -79,10 +78,8 @@ async def start(msg: types.Message):
         "INSERT INTO users (telegram_id) VALUES($1) ON CONFLICT DO NOTHING",
         msg.from_user.id)
 
-    user_state[msg.from_user.id] = "menu"
-
     await msg.answer(
-    "🎮 مرحباً بك في بوت التوقعات",
+    "🎮 مرحباً بك\nاختر من القائمة",
     reply_markup=main_menu()
     )
 
@@ -157,58 +154,73 @@ async def check_subscription(user_id):
 
     return row["subscription_end"] > datetime.datetime.now()
 
-# ================= PREDICTION START =================
+# ================= START PREDICTION =================
 
 @dp.message_handler(lambda m: m.text == "🎯 توقع الجولة")
-async def predict_start(msg: types.Message):
+async def start_prediction(msg: types.Message):
 
     sub = await check_subscription(msg.from_user.id)
 
     if not sub:
         await msg.answer(
-        "❌ يجب تفعيل الاشتراك أولاً",
+        "❌ يجب الاشتراك أولاً",
         reply_markup=main_menu()
         )
         return
 
-    user_state[msg.from_user.id] = "choose_last"
+    user_sequences[msg.from_user.id] = []
+
+    user_state[msg.from_user.id] = "sequence_input"
 
     await msg.answer(
-    "اختر آخر ضربة ظهرت",
+    "ادخل آخر 6 ضربات\nاختر الضربة رقم 1",
     reply_markup=hits_keyboard()
     )
 
-# ================= PREDICT =================
+# ================= SEQUENCE INPUT =================
 
-@dp.message_handler(lambda m: user_state.get(m.from_user.id) == "choose_last" and m.text in OPTIONS)
-async def predict(msg: types.Message):
+@dp.message_handler(lambda m: user_state.get(m.from_user.id) == "sequence_input" and m.text in OPTIONS)
+async def sequence_input(msg: types.Message):
 
-    last_hit = msg.text
-    last_hits[msg.from_user.id] = last_hit
+    seq = user_sequences[msg.from_user.id]
+    seq.append(msg.text)
+
+    if len(seq) < 6:
+
+        await msg.answer(f"الضربة رقم {len(seq)+1}")
+
+        return
+
+    user_state[msg.from_user.id] = "predicting"
+
+    await predict(msg)
+
+# ================= PREDICT FUNCTION =================
+
+async def predict(msg):
+
+    seq = user_sequences[msg.from_user.id]
 
     scores = {o:0 for o in OPTIONS}
 
     async with pool.acquire() as conn:
 
-        # بيانات التدريب
         rows = await conn.fetch(
-        "SELECT next_hit FROM training_data WHERE last_hit=$1",
-        last_hit
+        "SELECT next_hit FROM training_data WHERE sequence=$1",
+        json.dumps(seq)
         )
 
         for r in rows:
-            scores[r["next_hit"]] += 5
+            scores[r["next_hit"]] += 15
 
-        # نتائج المستخدمين
         rows2 = await conn.fetch(
-        "SELECT real_result FROM user_results WHERE last_hit=$1",
-        last_hit
+        "SELECT real_result FROM user_results WHERE sequence=$1",
+        json.dumps(seq)
         )
 
         for r in rows2:
-            scores[r["real_result"]] += 2
+            scores[r["real_result"]] += 5
 
-    # عشوائية بسيطة
     for o in OPTIONS:
         scores[o] += random.random()
 
@@ -216,7 +228,7 @@ async def predict(msg: types.Message):
 
     best = [x[0] for x in result[:4]]
 
-    text = "🎯 توقع الجولة القادمة\n\n"
+    text = "🎯 التوقعات الأقوى:\n\n"
 
     for i,b in enumerate(best,1):
         text += f"{i}️⃣ {b}\n"
@@ -232,27 +244,24 @@ async def predict(msg: types.Message):
 @dp.message_handler(lambda m: user_state.get(m.from_user.id) == "waiting_result" and m.text in OPTIONS)
 async def save_result(msg: types.Message):
 
-    last_hit = last_hits.get(msg.from_user.id)
+    seq = user_sequences[msg.from_user.id]
+    result = msg.text
 
     async with pool.acquire() as conn:
 
         await conn.execute(
-        "INSERT INTO user_results(telegram_id,last_hit,real_result) VALUES($1,$2,$3)",
+        "INSERT INTO user_results(telegram_id,sequence,real_result) VALUES($1,$2,$3)",
         msg.from_user.id,
-        last_hit,
-        msg.text
+        json.dumps(seq),
+        result
         )
 
-    user_state[msg.from_user.id] = "choose_last"
+    seq.pop(0)
+    seq.append(result)
 
-    await msg.answer(
-    "✅ تم تسجيل النتيجة\n\nاختر آخر ضربة للجولة الجديدة",
-    reply_markup=hits_keyboard()
-    )
+    await predict(msg)
 
-# ================= TRAINER =================
-
-trainer_state = {}
+# ================= TRAINER PANEL =================
 
 @dp.message_handler(lambda m: m.text == "👨‍🏫 لوحة المدرب")
 async def trainer_panel(msg: types.Message):
@@ -268,18 +277,20 @@ async def trainer_panel(msg: types.Message):
         return
 
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("🧠 تدريب جديد")
+    kb.add("🧠 تدريب")
     kb.add("↩️ رجوع")
 
     await msg.answer("لوحة المدرب", reply_markup=kb)
 
-@dp.message_handler(lambda m: m.text == "🧠 تدريب جديد")
+# ================= TRAINER START =================
+
+@dp.message_handler(lambda m: m.text == "🧠 تدريب")
 async def trainer_start(msg: types.Message):
 
-    trainer_state[msg.from_user.id] = {"sequence": []}
+    trainer_state[msg.from_user.id] = {"sequence":[]}
 
     await msg.answer(
-    "اختر آخر ضربة قبل التسلسل",
+    "ادخل 6 ضربات للتسلسل",
     reply_markup=hits_keyboard()
     )
 
@@ -291,19 +302,19 @@ async def trainer_sequence(msg: types.Message):
     if not state:
         return
 
-    if "last_hit" not in state:
-        state["last_hit"] = msg.text
-        await msg.answer("ابدأ إدخال التسلسل (6 ضربات)")
-        return
+    seq = state["sequence"]
 
-    if len(state["sequence"]) < 6:
+    if len(seq) < 6:
 
-        state["sequence"].append(msg.text)
+        seq.append(msg.text)
 
-        if len(state["sequence"]) == 6:
+        if len(seq) == 6:
+
             await msg.answer("اختر الضربة التالية")
+
         else:
-            await msg.answer(f"الضربة رقم {len(state['sequence'])+1}")
+
+            await msg.answer(f"الضربة رقم {len(seq)+1}")
 
         return
 
@@ -312,9 +323,8 @@ async def trainer_sequence(msg: types.Message):
     async with pool.acquire() as conn:
 
         await conn.execute(
-        "INSERT INTO training_data(last_hit,sequence,next_hit,trainer_id) VALUES($1,$2,$3,$4)",
-        state["last_hit"],
-        json.dumps(state["sequence"]),
+        "INSERT INTO training_data(sequence,next_hit,trainer_id) VALUES($1,$2,$3)",
+        json.dumps(seq),
         next_hit,
         msg.from_user.id
         )
