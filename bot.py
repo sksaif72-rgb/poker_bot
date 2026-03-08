@@ -125,7 +125,6 @@ def build_result_keyboard():
 # عرض التسلسل أفقي كامل + توضيح واضح
 # ────────────────────────────────────────────────
 def format_sequence_visual(sequence):
-    """عرض أفقي كامل + توضيح أن اليسار = الضربة الأولى (الأقدم)"""
     if not sequence:
         return "📭 لا يوجد تسلسل بعد"
     
@@ -145,8 +144,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     create_user(user_id)
     remaining = get_remaining_time(user_id)
     await update.message.reply_text(
-        f"""🎉 بوت روليت محترف
-        COWBOY
+        f"""🎯 **بوت COWBOY احترافي**
+
+📈 يعتمد على **آخر ١٠٠٠ جولة** حقيقية
+🧠 مدعوم بنماذج متقدمة (Ensemble Learning)
+
+⚠️ للاستخدام الترفيهي فقط – لا ضمانات للربح
+
 **حالة اشتراكك:** {remaining}
 
 اختر من الأزرار أدناه 👇""",
@@ -198,7 +202,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(get_remaining_time(user_id), reply_markup=main_keyboard())
 
 # ────────────────────────────────────────────────
-# GUESS FLOW + تعليم المشترك (مثال + زر التالي + زر ابدأ)
+# GUESS FLOW
 # ────────────────────────────────────────────────
 async def guess_warning(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_subscription(update.effective_user.id):
@@ -290,21 +294,18 @@ async def back_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await ask_hit(query.message, user_id)
 
 # ────────────────────────────────────────────────
-# AI v4.0 - آخر ١٠٠٠ جولة + LSTM + Transformer + Reinforcement Learning
+# AI v4.0 - آخر ١٠٠٠ جولة + Markov + Pattern + Global bias
 # ────────────────────────────────────────────────
 def predict_sequence(sequence):
-    """AI متقدم: ensemble من آخر 1000 جولة + محاكاة LSTM/Transformer/RL"""
     if len(sequence) < 1:
         return ITEMS[:3]
     
     scores = {item: 0.0 for item in ITEMS}
     
-    # آخر ١٠٠٠ نتيجة فقط (التعديل المطلوب)
     rows = db_execute(
         "SELECT sequence, next_hit FROM training_data ORDER BY id DESC LIMIT 1000"
     )
 
-    # Markov + Pattern Matching (أساس الـ ensemble)
     for order in [1, 2, 3]:
         trans = {}
         for seq_json, next_hit in rows:
@@ -322,25 +323,21 @@ def predict_sequence(sequence):
                 count = trans[key][item] + 2
                 scores[item] += (count / total) * weight
 
-    # محاكاة LSTM + Transformer + RL (وزن إضافي قوي)
     for seq_json, next_hit in rows:
         try:
             seq_t = tuple(json.loads(seq_json) if isinstance(seq_json, str) else seq_json)
             current = tuple(sequence[-6:])
             for length in range(3, 7):
                 if len(seq_t) >= length and len(current) >= length and seq_t[-length:] == current[-length:]:
-                    # وزن LSTM/Transformer/RL
                     scores[next_hit] += 180 if length >= 5 else 120
         except:
             continue
 
-    # Global bias (Reinforcement Learning simulation)
     global_count = Counter([r[1] for r in rows])
     total_g = sum(global_count.values()) or 1
     for item in ITEMS:
         scores[item] += (global_count[item] / total_g) * 45
 
-    # ترتيب التنبؤات
     return [item[0] for item in sorted(scores.items(), key=lambda x: x[1], reverse=True)[:5]]
 
 async def show_prediction(message, user_id):
@@ -350,9 +347,9 @@ async def show_prediction(message, user_id):
 
     text = f"""{visual}
 
-**🔥 أقوى تخمين (LSTM):** {predictions[0]}
-**📊 متوسط (Transformer):** {predictions[1]}
-**🛡️ تأمين (RL):** {predictions[2]}
+**🔥 أقوى تخمين:** {predictions[0]}
+**📊 المتوسط:** {predictions[1]}
+**🛡️ التأمين:** {predictions[2]}
 
 اختر النتيجة الحقيقية 👇"""
     await message.reply_text(text, reply_markup=build_result_keyboard())
@@ -367,7 +364,6 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = query.data.replace("result_", "")
     sequence = sessions[user_id]["hits"]
 
-    # حفظ فقط إذا role = CP
     user = get_user(user_id)
     if user and user[0] == "CP":
         db_execute("INSERT INTO user_results (telegram_id, last_hit, real_result) VALUES (%s,%s,%s)",
@@ -375,7 +371,6 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db_execute("INSERT INTO training_data (last_hit, sequence, next_hit, trainer_id) VALUES (%s,%s,%s,%s)",
                    (sequence[-1], json.dumps(sequence), result, user_id), commit=True)
 
-    # الجولة التالية
     new_seq = sequence[1:] + [result]
     sessions[user_id]["hits"] = new_seq
     sessions[user_id]["round_number"] += 1
@@ -385,9 +380,9 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""{visual}
 
 **الجولة {sessions[user_id]['round_number']}**
-**🔥 أقوى (LSTM):** {predictions[0]}
-**📊 متوسط (Transformer):** {predictions[1]}
-**🛡️ تأمين (RL):** {predictions[2]}
+**🔥 أقوى:** {predictions[0]}
+**📊 المتوسط:** {predictions[1]}
+**🛡️ التأمين:** {predictions[2]}
 
 اختر النتيجة 👇"""
     await query.message.reply_text(text, reply_markup=build_result_keyboard())
@@ -431,7 +426,7 @@ def main():
     app.add_handler(CallbackQueryHandler(save_result, pattern="^result_"))
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
 
-    print("✅ البوت v4.0 (١٠٠٠ جولة + LSTM + Transformer + RL) شغال!")
+    print("✅ بوت COWBOY احترافي شغال!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
