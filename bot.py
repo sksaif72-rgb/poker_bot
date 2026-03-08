@@ -436,42 +436,30 @@ def predict_sequence(sequence):
 
     rows = cur.fetchall()
 
-    for seq_json, next_hit in rows:
+for seq_json, next_hit in rows:
 
     if isinstance(seq_json, str):
         seq = json.loads(seq_json)
     else:
         seq = seq_json
 
-        seq = json.loads(seq_json)
+    if seq == sequence:
+        scores[next_hit] += 120
 
-        if seq == sequence:
-            scores[next_hit] += 120
+    if len(seq) >= 5 and seq[-5:] == sequence[-5:]:
+        scores[next_hit] += 90
 
-        if len(seq) >= 5 and seq[-5:] == sequence[-5:]:
-            scores[next_hit] += 90
+    if len(seq) >= 4 and seq[-4:] == sequence[-4:]:
+        scores[next_hit] += 70
 
-        if len(seq) >= 4 and seq[-4:] == sequence[-4:]:
-            scores[next_hit] += 70
+    if len(seq) >= 3 and seq[-3:] == sequence[-3:]:
+        scores[next_hit] += 40
 
-        if len(seq) >= 3 and seq[-3:] == sequence[-3:]:
-            scores[next_hit] += 40
+    if len(seq) >= 2 and seq[-2:] == sequence[-2:]:
+        scores[next_hit] += 20
 
-        if len(seq) >= 2 and seq[-2:] == sequence[-2:]:
-            scores[next_hit] += 20
-
-        if seq[-1] == sequence[-1]:
-            scores[next_hit] += 10
-
-    # قراءة نتائج المستخدمين
-    cur.execute("SELECT last_hit, real_result FROM user_results")
-
-    rows = cur.fetchall()
-
-    for last_hit, result in rows:
-
-        if last_hit == sequence[-1]:
-            scores[result] += 15
+    if seq[-1] == sequence[-1]:
+        scores[next_hit] += 10
 
     cur.close()
 
