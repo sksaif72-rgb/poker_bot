@@ -45,11 +45,10 @@ logger = logging.getLogger(__name__)
 conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 
 # ────────────────────────────────────────────────
-# GAME ITEMS + CATEGORIES
+# GAME ITEMS
 # ────────────────────────────────────────────────
-FRUITS_VEG = ["🍎", "🍊", "🥬", "🍉"]               # الفواكه والخضروات الأساسية
-MEATS = ["🐟", "🍤", "🍗", "🍔"]                    # اللحوميات / البحرية / الوجبات السريعة
-ITEMS = FRUITS_VEG + MEATS
+ITEMS = ["🍎", "🍊", "🥬", "🍉", "🐟", "🍔", "🍤", "🍗"]
+MEAT_ITEMS = ["🐟", "🍤", "🍗", "🍔"]          # اللحوميات
 
 # ────────────────────────────────────────────────
 # SESSIONS
@@ -132,7 +131,20 @@ def format_sequence_visual(sequence):
     return f"🎮 **التسلسل الحالي**\n{' '.join(sequence)}"
 
 # ────────────────────────────────────────────────
-# START + PROFILE + CODE
+# حساب عدد التكرارات المتتالية بدون لحم
+# ────────────────────────────────────────────────
+def get_streak_of_non_meat(sequence):
+    if not sequence:
+        return 0
+    streak = 0
+    for item in reversed(sequence):
+        if item in MEAT_ITEMS:
+            break
+        streak += 1
+    return streak
+
+# ────────────────────────────────────────────────
+# START
 # ────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -164,6 +176,9 @@ async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🚀 جاهز للتوقع؟"""
     await update.message.reply_text(text, parse_mode="HTML")
 
+# ────────────────────────────────────────────────
+# CODE + ADMIN
+# ────────────────────────────────────────────────
 async def ask_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔑 أرسل كود الاشتراك:")
     sessions[update.effective_user.id] = {"mode": "code"}
@@ -279,7 +294,7 @@ async def back_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await ask_hit(query.message, user_id)
 
 # ────────────────────────────────────────────────
-# التنبؤ ← التعديل الرئيسي هنا
+# التنبؤ المعدل (الإضافة المهمة هنا)
 # ────────────────────────────────────────────────
 def predict_sequence(sequence):
     if len(sequence) < 1:
@@ -287,12 +302,12 @@ def predict_sequence(sequence):
     
     scores = {item: 0.0 for item in ITEMS}
     
-    # استخدام أكبر عدد ممكن (حتى 5000 سجل)
+    # ─── زيادة عدد السجلات المستخدمة ───
     rows = db_execute(
         "SELECT sequence, next_hit FROM training_data ORDER BY id DESC LIMIT 5000"
     )
 
-    # ─── Markov + n-gram weights ───
+    # ─── حساب الانتقالات العادية (1,2,3) ───
     for order in [1, 2, 3]:
         trans = {}
         for seq_json, next_hit in rows:
@@ -310,33 +325,34 @@ def predict_sequence(sequence):
                 count = trans[key][item] + 2
                 scores[item] += (count / total) * weight
 
-    # ─── Exact suffix matching bonus ───
+    # ─── تطابقات طويلة ───
     for seq_json, next_hit in rows:
         try:
             seq_t = tuple(json.loads(seq_json) if isinstance(seq_json, str) else seq_json)
             current = tuple(sequence[-6:])
             for length in range(3, 7):
                 if len(seq_t) >= length and len(current) >= length and seq_t[-length:] == current[-length:]:
-                    bonus = 220 if length >= 5 else 140
-                    scores[next_hit] += bonus
+                    scores[next_hit] += 180 if length >= 5 else 120
         except:
             continue
 
-    # ─── القاعدة الجديدة: إذا > 5 فواكه/خضار في آخر 6 → زيادة وزن اللحوميات ───
-    recent = sequence[-6:]
-    fruit_veg_count = sum(1 for x in recent if x in FRUITS_VEG)
-    if fruit_veg_count >= 5:
-        meat_boost = 380 + (fruit_veg_count - 4) * 80   # قوي جداً عند 5 وأقوى عند 6
-        for meat in MEATS:
-            scores[meat] += meat_boost
-
-    # ─── Global frequency fallback ───
+    # ─── التكرار العام ───
     global_count = Counter([r[1] for r in rows])
     total_g = sum(global_count.values()) or 1
     for item in ITEMS:
-        scores[item] += (global_count[item] / total_g) * 50
+        scores[item] += (global_count[item] / total_g) * 45
 
-    # الترتيب النهائي
+    # ─── القاعدة الجديدة: إذا تكررت الفواكه/الخضار كثير → زد وزن اللحوم ───
+    streak = get_streak_of_non_meat(sequence)
+    last_was_meat = sequence and sequence[-1] in MEAT_ITEMS
+
+    if streak >= 10 and not last_was_meat:
+        meat_bonus = 220 + (streak - 10) * 18   # يزيد تدريجياً كلما طال الانتظار
+        for meat in MEAT_ITEMS:
+            scores[meat] += meat_bonus
+    # إذا ضرب لحم → نعيد التوازن (لا bonus إضافي)
+
+    # ─── ترتيب النتيجة ───
     sorted_preds = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [item[0] for item in sorted_preds[:5]]
 
@@ -345,8 +361,8 @@ async def show_prediction(message, user_id):
     predictions = predict_sequence(sequence)
     visual = format_sequence_visual(sequence)
 
-    strong_conf = 78 + len(set(sequence)) * 3
-    strong_conf = min(strong_conf, 94)
+    strong_conf = 78 + len(set(sequence)) * 2
+    strong_conf = min(strong_conf, 92)
 
     text = f"""{visual}
 
@@ -361,7 +377,7 @@ async def show_prediction(message, user_id):
     await message.reply_text(text, reply_markup=build_result_keyboard())
 
 # ────────────────────────────────────────────────
-# حفظ النتيجة + الجولة التالية
+# SAVE RESULT + عرض الجولة التالية
 # ────────────────────────────────────────────────
 async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -384,8 +400,8 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     visual = format_sequence_visual(new_seq)
     predictions = predict_sequence(new_seq)
 
-    strong_conf = 78 + len(set(new_seq)) * 3
-    strong_conf = min(strong_conf, 94)
+    strong_conf = 78 + len(set(new_seq)) * 2
+    strong_conf = min(strong_conf, 92)
 
     text = f"""{visual}
 
@@ -438,7 +454,7 @@ def main():
     app.add_handler(CallbackQueryHandler(save_result, pattern="^result_"))
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
 
-    print("✅ بوت COWBOY احترافي شغال!")
+    print("✅ بوت COWBOY احترافي شغال! (مع قاعدة اللحوم بعد 10 فواكه)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
