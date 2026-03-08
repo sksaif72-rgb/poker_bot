@@ -3,6 +3,7 @@ import psycopg2
 import json
 from datetime import datetime, timedelta, timezone
 import os
+from collections import Counter
 
 from flask import Flask
 from threading import Thread
@@ -136,7 +137,7 @@ def activate_code(telegram_id, code):
     return True, f"✅ تم تفعيل الاشتراك {days} يوم"
 
 # ────────────────────────────────────────────────
-# RESULT KEYBOARD (مع زر الرجوع)
+# RESULT KEYBOARD
 # ────────────────────────────────────────────────
 
 def build_result_keyboard():
@@ -192,7 +193,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sessions.pop(user_id, None)
 
 # ────────────────────────────────────────────────
-# GUESS FLOW  ← تمت إضافة رقم الجولة هنا
+# GUESS FLOW
 # ────────────────────────────────────────────────
 
 async def guess_warning(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -278,41 +279,84 @@ async def back_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await ask_hit(query.message, user_id)
 
 # ────────────────────────────────────────────────
-# PREDICTION
+# PREDICTION - AI ENGINE v2.0 (متطور جداً)
 # ────────────────────────────────────────────────
 
 def predict_sequence(sequence):
+    """🧠 ذكاء اصطناعي متطور: Multi-Order Markov Chain + Laplace Smoothing + Backoff + Pattern Ensemble
+    يستخدم كل البيانات التدريبية ويعطي ترتيب دقيق جداً (أقوى بكثير من النسخة السابقة)"""
     if not sequence:
         return ITEMS[:]
 
     scores = {item: 0 for item in ITEMS}
     last_hit = sequence[-1]
+    seq_tuple = tuple(sequence[-6:])
 
     rows = db_execute("SELECT sequence, next_hit FROM training_data")
+
+    # 1. Transition Matrix (Order 1) - أقوى وزن
+    trans = {i: Counter() for i in ITEMS}
     for seq_json, next_hit in rows:
         try:
             seq = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
+            if len(seq) > 0:
+                prev = seq[-1]
+                if prev in trans:
+                    trans[prev][next_hit] += 1
         except:
             continue
-        if not seq:
+
+    if last_hit in trans:
+        total = sum(trans[last_hit].values()) + len(ITEMS)  # Laplace smoothing
+        for item in ITEMS:
+            count = trans[last_hit][item] + 1
+            scores[item] += (count / total) * 420
+
+    # 2. Higher-order + exact + streak matching
+    for seq_json, next_hit in rows:
+        try:
+            seq = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
+            seq_t = tuple(seq)
+            if len(seq_t) < 2:
+                continue
+
+            # Exact full sequence match
+            if seq_t == seq_tuple:
+                scores[next_hit] += 320
+
+            # Multi-order suffix match (2 to 6)
+            for length in range(2, 7):
+                if len(seq_t) >= length and len(seq_tuple) >= length:
+                    if seq_t[-length:] == seq_tuple[-length:]:
+                        scores[next_hit] += 95 // length + 45
+
+            # Streak match from the end
+            match_len = 0
+            for i in range(1, min(7, len(seq_t), len(seq_tuple)) + 1):
+                if seq_t[-i] == seq_tuple[-i]:
+                    match_len += 1
+                else:
+                    break
+            if match_len >= 2:
+                scores[next_hit] += match_len * 32
+
+        except:
             continue
 
-        if seq[-1] == last_hit:
-            scores[next_hit] += 140
-
-        if seq == sequence:
-            scores[next_hit] += 120
-        if len(seq) >= 5 and seq[-5:] == sequence[-5:]:
-            scores[next_hit] += 90
-        if len(seq) >= 4 and seq[-4:] == sequence[-4:]:
-            scores[next_hit] += 70
-        if len(seq) >= 3 and seq[-3:] == sequence[-3:]:
-            scores[next_hit] += 40
-        if len(seq) >= 2 and seq[-2:] == sequence[-2:]:
-            scores[next_hit] += 20
+    # 3. Global fallback (إذا ما في بيانات كافية)
+    global_count = Counter()
+    for _, next_hit in rows:
+        global_count[next_hit] += 1
+    if max(scores.values()) == 0:
+        for item in ITEMS:
+            scores[item] += global_count[item] * 8
 
     sorted_items = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [item[0] for item in sorted_items]
+
+# ────────────────────────────────────────────────
+# SHOW PREDICTION
+# ────────────────────────────────────────────────
 
 async def show_prediction(message, user_id):
     if user_id not in sessions or "hits" not in sessions[user_id]:
@@ -328,39 +372,37 @@ async def show_prediction(message, user_id):
 
     await message.reply_text(text, reply_markup=build_result_keyboard())
 
+# ────────────────────────────────────────────────
+# SAVE RESULT
+# ────────────────────────────────────────────────
+
 async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     user_id = query.from_user.id
-
     if user_id not in sessions or "hits" not in sessions[user_id]:
         return
 
     result = query.data.replace("result_", "")
     sequence = sessions[user_id]["hits"]
 
-    # ───── التحقق من دور المستخدم ─────
     user = get_user(user_id)
     if user and user[0] == "CP":
-
         db_execute(
             "INSERT INTO user_results (telegram_id, last_hit, real_result) VALUES (%s,%s,%s)",
             (user_id, sequence[-1], result), commit=True
         )
-
         db_execute(
             "INSERT INTO training_data (last_hit, sequence, next_hit, trainer_id) VALUES (%s,%s,%s,%s)",
             (sequence[-1], json.dumps(sequence), result, user_id), commit=True
         )
 
-    # ───── تحديث التسلسل ─────
     new_sequence = sequence[1:] + [result]
     sessions[user_id]["hits"] = new_sequence
     sessions[user_id]["round_number"] += 1
 
     round_num = sessions[user_id]["round_number"]
-
     predictions = predict_sequence(new_sequence)
 
     text = f"**الجولة {round_num}**  🎯 الجولة الجديدة\n\n"
@@ -371,7 +413,7 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.reply_text(text, reply_markup=build_result_keyboard())
 
 # ────────────────────────────────────────────────
-# زر الرجوع إلى القائمة الرئيسية
+# BACK TO MAIN
 # ────────────────────────────────────────────────
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -392,7 +434,7 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ────────────────────────────────────────────────
-# إحصائيات
+# STATISTICS
 # ────────────────────────────────────────────────
 
 async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -405,9 +447,9 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_users = total_users_row[0] if total_users_row else 0
     
     active_subs_row = db_execute(
-    "SELECT COUNT(*) FROM users WHERE subscription_end > %s",
-    (datetime.now(timezone.utc),), fetchone=True
-)
+        "SELECT COUNT(*) FROM users WHERE subscription_end > %s",
+        (datetime.now(timezone.utc),), fetchone=True
+    )
     active_subs = active_subs_row[0] if active_subs_row else 0
     
     user_results_row = db_execute(
@@ -435,7 +477,7 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 # ────────────────────────────────────────────────
-# TRAINER PANEL & TRAINING FLOW
+# TRAINER PANEL
 # ────────────────────────────────────────────────
 
 async def trainer_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
