@@ -45,9 +45,11 @@ logger = logging.getLogger(__name__)
 conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 
 # ────────────────────────────────────────────────
-# GAME ITEMS
+# GAME ITEMS + CATEGORIES
 # ────────────────────────────────────────────────
-ITEMS = ["🍎", "🍊", "🥬", "🍉", "🐟", "🍔", "🍤", "🍗"]
+FRUITS_VEG = ["🍎", "🍊", "🥬", "🍉"]               # الفواكه والخضروات الأساسية
+MEATS = ["🐟", "🍤", "🍗", "🍔"]                    # اللحوميات / البحرية / الوجبات السريعة
+ITEMS = FRUITS_VEG + MEATS
 
 # ────────────────────────────────────────────────
 # SESSIONS
@@ -122,7 +124,7 @@ def build_result_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 # ────────────────────────────────────────────────
-# عرض التسلسل فقط (بدون الملاحظة الطويلة)
+# عرض التسلسل
 # ────────────────────────────────────────────────
 def format_sequence_visual(sequence):
     if not sequence:
@@ -130,7 +132,7 @@ def format_sequence_visual(sequence):
     return f"🎮 **التسلسل الحالي**\n{' '.join(sequence)}"
 
 # ────────────────────────────────────────────────
-# START (مختصر حسب طلبك)
+# START + PROFILE + CODE
 # ────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -162,9 +164,6 @@ async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🚀 جاهز للتوقع؟"""
     await update.message.reply_text(text, parse_mode="HTML")
 
-# ────────────────────────────────────────────────
-# CODE + ADMIN
-# ────────────────────────────────────────────────
 async def ask_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔑 أرسل كود الاشتراك:")
     sessions[update.effective_user.id] = {"mode": "code"}
@@ -190,7 +189,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(get_remaining_time(user_id), reply_markup=main_keyboard())
 
 # ────────────────────────────────────────────────
-# GUESS FLOW + التعليمات المعدلة
+# GUESS FLOW
 # ────────────────────────────────────────────────
 async def guess_warning(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_subscription(update.effective_user.id):
@@ -280,7 +279,7 @@ async def back_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await ask_hit(query.message, user_id)
 
 # ────────────────────────────────────────────────
-# التنبؤ + عرض التوقعات بالشكل الجديد
+# التنبؤ ← التعديل الرئيسي هنا
 # ────────────────────────────────────────────────
 def predict_sequence(sequence):
     if len(sequence) < 1:
@@ -288,10 +287,12 @@ def predict_sequence(sequence):
     
     scores = {item: 0.0 for item in ITEMS}
     
+    # استخدام أكبر عدد ممكن (حتى 5000 سجل)
     rows = db_execute(
-        "SELECT sequence, next_hit FROM training_data ORDER BY id DESC LIMIT 1000"
+        "SELECT sequence, next_hit FROM training_data ORDER BY id DESC LIMIT 5000"
     )
 
+    # ─── Markov + n-gram weights ───
     for order in [1, 2, 3]:
         trans = {}
         for seq_json, next_hit in rows:
@@ -309,21 +310,33 @@ def predict_sequence(sequence):
                 count = trans[key][item] + 2
                 scores[item] += (count / total) * weight
 
+    # ─── Exact suffix matching bonus ───
     for seq_json, next_hit in rows:
         try:
             seq_t = tuple(json.loads(seq_json) if isinstance(seq_json, str) else seq_json)
             current = tuple(sequence[-6:])
             for length in range(3, 7):
                 if len(seq_t) >= length and len(current) >= length and seq_t[-length:] == current[-length:]:
-                    scores[next_hit] += 180 if length >= 5 else 120
+                    bonus = 220 if length >= 5 else 140
+                    scores[next_hit] += bonus
         except:
             continue
 
+    # ─── القاعدة الجديدة: إذا > 5 فواكه/خضار في آخر 6 → زيادة وزن اللحوميات ───
+    recent = sequence[-6:]
+    fruit_veg_count = sum(1 for x in recent if x in FRUITS_VEG)
+    if fruit_veg_count >= 5:
+        meat_boost = 380 + (fruit_veg_count - 4) * 80   # قوي جداً عند 5 وأقوى عند 6
+        for meat in MEATS:
+            scores[meat] += meat_boost
+
+    # ─── Global frequency fallback ───
     global_count = Counter([r[1] for r in rows])
     total_g = sum(global_count.values()) or 1
     for item in ITEMS:
-        scores[item] += (global_count[item] / total_g) * 45
+        scores[item] += (global_count[item] / total_g) * 50
 
+    # الترتيب النهائي
     sorted_preds = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [item[0] for item in sorted_preds[:5]]
 
@@ -332,9 +345,8 @@ async def show_prediction(message, user_id):
     predictions = predict_sequence(sequence)
     visual = format_sequence_visual(sequence)
 
-    # نسبة تقريبية (يمكن تعديل المنطق لاحقاً حسب رغبتك)
-    strong_conf = 78 + len(set(sequence)) * 2  # مثال بسيط
-    strong_conf = min(strong_conf, 92)
+    strong_conf = 78 + len(set(sequence)) * 3
+    strong_conf = min(strong_conf, 94)
 
     text = f"""{visual}
 
@@ -349,7 +361,7 @@ async def show_prediction(message, user_id):
     await message.reply_text(text, reply_markup=build_result_keyboard())
 
 # ────────────────────────────────────────────────
-# SAVE RESULT + عرض الجولة التالية بنفس التنسيق
+# حفظ النتيجة + الجولة التالية
 # ────────────────────────────────────────────────
 async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -372,8 +384,8 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     visual = format_sequence_visual(new_seq)
     predictions = predict_sequence(new_seq)
 
-    strong_conf = 78 + len(set(new_seq)) * 2
-    strong_conf = min(strong_conf, 92)
+    strong_conf = 78 + len(set(new_seq)) * 3
+    strong_conf = min(strong_conf, 94)
 
     text = f"""{visual}
 
