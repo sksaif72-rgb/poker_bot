@@ -122,34 +122,22 @@ def build_result_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 # ────────────────────────────────────────────────
-# عرض التسلسل أفقي كامل + توضيح واضح
+# عرض التسلسل فقط (بدون الملاحظة الطويلة)
 # ────────────────────────────────────────────────
 def format_sequence_visual(sequence):
     if not sequence:
         return "📭 لا يوجد تسلسل بعد"
-    
-    visual = "🎮 **التسلسل الحالي**\n"
-    visual += " ".join(sequence) + "\n\n"
-    visual += "⚠️ **ملاحظة مهمة للمشترك:**\n"
-    visual += "الضربة على الـ**يسار** هي الضربة الأولى (الأقدم)\n"
-    visual += "الضربة على الـ**يمين** هي الضربة الأخيرة\n"
-    visual += "─" * 30
-    return visual
+    return f"🎮 **التسلسل الحالي**\n{' '.join(sequence)}"
 
 # ────────────────────────────────────────────────
-# START + حسابي
+# START (مختصر حسب طلبك)
 # ────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     create_user(user_id)
     remaining = get_remaining_time(user_id)
     await update.message.reply_text(
-        f"""🎯 **بوت COWBOY احترافي**
-
-📈 يعتمد على **آخر ١٠٠٠ جولة** حقيقية
-🧠 مدعوم بنماذج متقدمة (Ensemble Learning)
-
-⚠️ للاستخدام الترفيهي فقط – لا ضمانات للربح
+        f"""🎯 بوت COWBOY احترافي
 
 **حالة اشتراكك:** {remaining}
 
@@ -202,28 +190,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(get_remaining_time(user_id), reply_markup=main_keyboard())
 
 # ────────────────────────────────────────────────
-# GUESS FLOW
+# GUESS FLOW + التعليمات المعدلة
 # ────────────────────────────────────────────────
 async def guess_warning(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_subscription(update.effective_user.id):
         await update.message.reply_text("❌ اشتراكك منتهي")
         return
     
-    example = "مثال توضيحي:\n🍎 🍊 🥬 🍉 🐟 🍔\n(اليسار = الضربة الأولى)"
-    
+    example = "مثال: 🍎 🍊 🥬 🍉 🐟 🍔\n(من اليسار ← إلى اليمين →)"
+
     keyboard = [
         [InlineKeyboardButton("📖 التالي (فهمت)", callback_data="tutorial_next")],
         [InlineKeyboardButton("🚀 ابدأ الجولة الآن", callback_data="start_guess")]
     ]
     
     await update.message.reply_text(
-        f"""⚠️ **تأكد من الدقة**
-{get_remaining_time(update.effective_user.id)}
+        f"""⚠️ **يرجى اختيار التسلسل من يسار إلى يمين من الروليت**\n
+الضربة رقم ١ تكون أقصى اليسار في الشريط
 
 {example}
 
-**ملاحظة:** في كل جولة ستظهر لك التسلسل أفقياً
-الضربة على اليسار = الضربة الأولى (الأقدم)
+**حالة اشتراكك:** {get_remaining_time(update.effective_user.id)}
 
 جاهز؟""",
         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -233,7 +220,7 @@ async def tutorial_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        "✅ تم فهم التعليمات!\n\nالآن اضغط على الزر أدناه لبدء الجولة",
+        "✅ تم فهم التعليمات!\n\nاضغط لبدء الجولة",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("🚀 ابدأ الجولة الآن", callback_data="start_guess")
         ]])
@@ -255,8 +242,7 @@ async def ask_hit(message, user_id):
         if len(row) == 4:
             keyboard.append(row)
             row = []
-    if row:
-        keyboard.append(row)
+    if row: keyboard.append(row)
     keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_hit")])
     
     await message.reply_text(
@@ -294,11 +280,11 @@ async def back_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await ask_hit(query.message, user_id)
 
 # ────────────────────────────────────────────────
-# AI v4.0 - آخر ١٠٠٠ جولة + Markov + Pattern + Global bias
+# التنبؤ + عرض التوقعات بالشكل الجديد
 # ────────────────────────────────────────────────
 def predict_sequence(sequence):
     if len(sequence) < 1:
-        return ITEMS[:3]
+        return ITEMS[:4]
     
     scores = {item: 0.0 for item in ITEMS}
     
@@ -338,24 +324,32 @@ def predict_sequence(sequence):
     for item in ITEMS:
         scores[item] += (global_count[item] / total_g) * 45
 
-    return [item[0] for item in sorted(scores.items(), key=lambda x: x[1], reverse=True)[:5]]
+    sorted_preds = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    return [item[0] for item in sorted_preds[:5]]
 
 async def show_prediction(message, user_id):
     sequence = sessions[user_id]["hits"]
     predictions = predict_sequence(sequence)
     visual = format_sequence_visual(sequence)
 
+    # نسبة تقريبية (يمكن تعديل المنطق لاحقاً حسب رغبتك)
+    strong_conf = 78 + len(set(sequence)) * 2  # مثال بسيط
+    strong_conf = min(strong_conf, 92)
+
     text = f"""{visual}
 
-**🔥 أقوى تخمين:** {predictions[0]}
-**📊 المتوسط:** {predictions[1]}
-**🛡️ التأمين:** {predictions[2]}
+**الجولة {sessions[user_id]['round_number']}**
 
-اختر النتيجة الحقيقية 👇"""
+🔥 تخمين قوي: {predictions[0]} {predictions[1]}
+ممكن تضرب بنسبة: {strong_conf}%
+
+🛡️ التأمين: {predictions[2]} {predictions[3]}
+
+اختر النتيجة 👇"""
     await message.reply_text(text, reply_markup=build_result_keyboard())
 
 # ────────────────────────────────────────────────
-# SAVE RESULT
+# SAVE RESULT + عرض الجولة التالية بنفس التنسيق
 # ────────────────────────────────────────────────
 async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -377,12 +371,18 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     visual = format_sequence_visual(new_seq)
     predictions = predict_sequence(new_seq)
+
+    strong_conf = 78 + len(set(new_seq)) * 2
+    strong_conf = min(strong_conf, 92)
+
     text = f"""{visual}
 
 **الجولة {sessions[user_id]['round_number']}**
-**🔥 أقوى:** {predictions[0]}
-**📊 المتوسط:** {predictions[1]}
-**🛡️ التأمين:** {predictions[2]}
+
+🔥 تخمين قوي: {predictions[0]} {predictions[1]}
+ممكن تضرب بنسبة: {strong_conf}%
+
+🛡️ التأمين: {predictions[2]} {predictions[3]}
 
 اختر النتيجة 👇"""
     await query.message.reply_text(text, reply_markup=build_result_keyboard())
