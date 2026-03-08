@@ -434,7 +434,7 @@ def predict_sequence(sequence):
     # قراءة بيانات التدريب
     cur.execute("SELECT sequence, next_hit FROM training_data")
 
-    rows = cur.fetchall()
+rows = cur.fetchall()
 
 for seq_json, next_hit in rows:
 
@@ -461,17 +461,17 @@ for seq_json, next_hit in rows:
     if seq[-1] == sequence[-1]:
         scores[next_hit] += 10
 
-    cur.close()
 
-    # ترتيب النتائج
-    sorted_items = sorted(
-        scores.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )
+cur.close()
 
-    return [item[0] for item in sorted_items]
+# ترتيب النتائج
+sorted_items = sorted(
+    scores.items(),
+    key=lambda x: x[1],
+    reverse=True
+)
 
+return [item[0] for item in sorted_items]
 
 # =========================
 # SHOW PREDICTION
