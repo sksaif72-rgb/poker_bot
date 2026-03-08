@@ -192,7 +192,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sessions.pop(user_id, None)
 
 # ────────────────────────────────────────────────
-# GUESS FLOW
+# GUESS FLOW  ← تمت إضافة رقم الجولة هنا
 # ────────────────────────────────────────────────
 
 async def guess_warning(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -209,13 +209,19 @@ async def start_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    sessions[user_id] = {"mode": "guess", "hits": []}
+    sessions[user_id] = {
+        "mode": "guess",
+        "hits": [],
+        "round_number": 1
+    }
     await ask_hit(query.message, user_id)
 
 async def ask_hit(message, user_id):
     if user_id not in sessions or "hits" not in sessions[user_id]:
         return
     step = len(sessions[user_id]["hits"]) + 1
+    round_num = sessions[user_id]["round_number"]
+    
     keyboard = []
     row = []
     for item in ITEMS:
@@ -226,7 +232,11 @@ async def ask_hit(message, user_id):
     if row:
         keyboard.append(row)
     keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_hit")])
-    await message.reply_text(f"اختر الضربة رقم {step}", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    await message.reply_text(
+        f"**الجولة {round_num}**  🎲\n\nاختر الضربة رقم {step}",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def hit_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -239,7 +249,10 @@ async def hit_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✅ تم", callback_data=f"confirm_hit_{fruit}")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="back_hit")]
     ]
-    await query.edit_message_text(f"اخترت {fruit}\n\nهل أنت متأكد؟", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text(
+        f"اخترت {fruit}\n\nهل أنت متأكد؟",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def confirm_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -265,7 +278,7 @@ async def back_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await ask_hit(query.message, user_id)
 
 # ────────────────────────────────────────────────
-# PREDICTION (معزز بـ Last Hit + التسلسل الحالي + زر رجوع)
+# PREDICTION
 # ────────────────────────────────────────────────
 
 def predict_sequence(sequence):
@@ -305,12 +318,13 @@ async def show_prediction(message, user_id):
     if user_id not in sessions or "hits" not in sessions[user_id]:
         return
     sequence = sessions[user_id]["hits"]
+    round_num = sessions[user_id]["round_number"]
     predictions = predict_sequence(sequence)
     
-    text = "🎯 التوقعات الأقوى\n\n"
+    text = f"**الجولة {round_num}**  🎯 التوقعات الأقوى\n\n"
     text += f"التسلسل الحالي: {' '.join(sequence)}\n\n"
     text += "\n".join(f"{i+1}️⃣ {p}" for i, p in enumerate(predictions[:4]))
-    text += "\n\nاختر النتيجة الحقيقية"
+    text += "\n\nاختر النتيجة الحقيقية لهذه الجولة"
 
     await message.reply_text(text, reply_markup=build_result_keyboard())
 
@@ -332,12 +346,15 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (sequence[-1], json.dumps(sequence), result, user_id), commit=True
     )
 
+    # تحديث التسلسل + زيادة رقم الجولة
     new_sequence = sequence[1:] + [result]
     sessions[user_id]["hits"] = new_sequence
+    sessions[user_id]["round_number"] += 1
 
+    round_num = sessions[user_id]["round_number"]
     predictions = predict_sequence(new_sequence)
     
-    text = "🎯 الجولة الجديدة\n\n"
+    text = f"**الجولة {round_num}**  🎯 الجولة الجديدة\n\n"
     text += f"التسلسل الحالي: {' '.join(new_sequence)}\n\n"
     text += "\n".join(f"{i+1}️⃣ {p}" for i, p in enumerate(predictions[:4]))
     text += "\n\nاختر النتيجة الحقيقية"
@@ -372,7 +389,6 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    # إحصائيات عامة
     total_trainings_row = db_execute("SELECT COUNT(*) FROM training_data", fetchone=True)
     total_trainings = total_trainings_row[0] if total_trainings_row else 0
     
@@ -385,7 +401,6 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     active_subs = active_subs_row[0] if active_subs_row else 0
     
-    # إحصائيات المستخدم
     user_results_row = db_execute(
         "SELECT COUNT(*) FROM user_results WHERE telegram_id = %s",
         (user_id,), fetchone=True
