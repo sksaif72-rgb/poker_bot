@@ -438,21 +438,26 @@ def predict_sequence(sequence):
 
     for seq_json, next_hit in rows:
 
+    if isinstance(seq_json, str):
+        seq = json.loads(seq_json)
+    else:
+        seq = seq_json
+
         seq = json.loads(seq_json)
 
         if seq == sequence:
             scores[next_hit] += 120
 
-        if seq[-5:] == sequence[-5:]:
+        if len(seq) >= 5 and seq[-5:] == sequence[-5:]:
             scores[next_hit] += 90
 
-        if seq[-4:] == sequence[-4:]:
+        if len(seq) >= 4 and seq[-4:] == sequence[-4:]:
             scores[next_hit] += 70
 
-        if seq[-3:] == sequence[-3:]:
+        if len(seq) >= 3 and seq[-3:] == sequence[-3:]:
             scores[next_hit] += 40
 
-        if seq[-2:] == sequence[-2:]:
+        if len(seq) >= 2 and seq[-2:] == sequence[-2:]:
             scores[next_hit] += 20
 
         if seq[-1] == sequence[-1]:
@@ -734,7 +739,7 @@ async def trainer_confirm_hit(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     user_id = query.from_user.id
 
-    fruit = query.data.replace("confirm_hit_", "")
+    fruit = query.data.replace("train_confirm_", "")
 
     sessions[user_id]["hits"].append(fruit)
 
