@@ -145,13 +145,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     create_user(user_id)
     remaining = get_remaining_time(user_id)
     await update.message.reply_text(
-        f"""🎉 **بوت التوقعات الذكي الاحترافي v4.0**
-
-🧠 يعتمد على **آخر ١٠٠٠ جولة** تدريبية
-🧬 مدعوم بـ LSTM + Transformer + Reinforcement Learning (Ensemble)
-
-⚠️ للاستخدام الترفيهي فقط
-
+        f"""🎉 بوت روليت محترف
+        COWBOY
 **حالة اشتراكك:** {remaining}
 
 اختر من الأزرار أدناه 👇""",
