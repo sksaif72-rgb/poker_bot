@@ -1,7 +1,7 @@
 import logging
 import psycopg2
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 
 from flask import Flask
@@ -115,7 +115,7 @@ def check_subscription(telegram_id):
         "SELECT subscription_end FROM users WHERE telegram_id = %s",
         (telegram_id,), fetchone=True
     )
-    return row and row[0] and row[0] > datetime.now()
+    return row and row[0] and row[0] > datetime.now(timezone.utc)
 
 def activate_code(telegram_id, code):
     data = db_execute(
@@ -128,7 +128,7 @@ def activate_code(telegram_id, code):
     if used >= max_use:
         return False, "❌ الكود منتهي"
 
-    end_date = datetime.now() + timedelta(days=days)
+    end_date = datetime.now(timezone.utc) + timedelta(days=days)
     db_execute("UPDATE users SET subscription_end = %s WHERE telegram_id = %s",
                (end_date, telegram_id), commit=True)
     db_execute("UPDATE codes SET used = used + 1 WHERE code = %s",
@@ -396,9 +396,9 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_users = total_users_row[0] if total_users_row else 0
     
     active_subs_row = db_execute(
-        "SELECT COUNT(*) FROM users WHERE subscription_end > %s",
-        (datetime.now(),), fetchone=True
-    )
+    "SELECT COUNT(*) FROM users WHERE subscription_end > %s",
+    (datetime.now(timezone.utc),), fetchone=True
+)
     active_subs = active_subs_row[0] if active_subs_row else 0
     
     user_results_row = db_execute(
@@ -408,7 +408,7 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_results_count = user_results_row[0] if user_results_row else 0
     
     user_info = get_user(user_id)
-    if user_info and user_info[1] and user_info[1] > datetime.now():
+    if user_info and user_info[1] and user_info[1] > datetime.now(timezone.utc):
         sub_text = f"✅ نشط حتى {user_info[1].strftime('%Y-%m-%d')}"
     else:
         sub_text = "❌ غير نشط (اشترك بكود)"
