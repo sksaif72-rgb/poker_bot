@@ -331,29 +331,38 @@ async def show_prediction(message, user_id):
 async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
     user_id = query.from_user.id
+
     if user_id not in sessions or "hits" not in sessions[user_id]:
         return
+
     result = query.data.replace("result_", "")
     sequence = sessions[user_id]["hits"]
 
-    db_execute(
-        "INSERT INTO user_results (telegram_id, last_hit, real_result) VALUES (%s,%s,%s)",
-        (user_id, sequence[-1], result), commit=True
-    )
-    db_execute(
-        "INSERT INTO training_data (last_hit, sequence, next_hit, trainer_id) VALUES (%s,%s,%s,%s)",
-        (sequence[-1], json.dumps(sequence), result, user_id), commit=True
-    )
+    # ───── التحقق من دور المستخدم ─────
+    user = get_user(user_id)
+    if user and user[0] == "CP":
 
-    # تحديث التسلسل + زيادة رقم الجولة
+        db_execute(
+            "INSERT INTO user_results (telegram_id, last_hit, real_result) VALUES (%s,%s,%s)",
+            (user_id, sequence[-1], result), commit=True
+        )
+
+        db_execute(
+            "INSERT INTO training_data (last_hit, sequence, next_hit, trainer_id) VALUES (%s,%s,%s,%s)",
+            (sequence[-1], json.dumps(sequence), result, user_id), commit=True
+        )
+
+    # ───── تحديث التسلسل ─────
     new_sequence = sequence[1:] + [result]
     sessions[user_id]["hits"] = new_sequence
     sessions[user_id]["round_number"] += 1
 
     round_num = sessions[user_id]["round_number"]
+
     predictions = predict_sequence(new_sequence)
-    
+
     text = f"**الجولة {round_num}**  🎯 الجولة الجديدة\n\n"
     text += f"التسلسل الحالي: {' '.join(new_sequence)}\n\n"
     text += "\n".join(f"{i+1}️⃣ {p}" for i, p in enumerate(predictions[:4]))
