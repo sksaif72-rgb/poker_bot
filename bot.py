@@ -279,80 +279,77 @@ async def back_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await ask_hit(query.message, user_id)
 
 # ────────────────────────────────────────────────
-# PREDICTION - AI ENGINE v2.0 (متطور جداً)
+# PREDICTION - AI ENGINE v3.0 (ذكي جداً - Multi-Order Markov Ensemble)
 # ────────────────────────────────────────────────
 
 def predict_sequence(sequence):
-    """🧠 ذكاء اصطناعي متطور: Multi-Order Markov Chain + Laplace Smoothing + Backoff + Pattern Ensemble
-    يستخدم كل البيانات التدريبية ويعطي ترتيب دقيق جداً (أقوى بكثير من النسخة السابقة)"""
-    if not sequence:
-        return ITEMS[:]
+    """🧠 AI Engine v3.0 - Multi-Order Markov Ensemble + Pattern Recognition
+    أقوى نسخة ذكاء اصطناعي ممكنة بدون تغيير قاعدة البيانات"""
+    if len(sequence) < 1:
+        return ITEMS[:3]
 
-    scores = {item: 0 for item in ITEMS}
-    last_hit = sequence[-1]
-    seq_tuple = tuple(sequence[-6:])
+    scores = {item: 0.0 for item in ITEMS}
+    current_seq = tuple(sequence[-6:])   # آخر 6 ضربات
 
     rows = db_execute("SELECT sequence, next_hit FROM training_data")
 
-    # 1. Transition Matrix (Order 1) - أقوى وزن
-    trans = {i: Counter() for i in ITEMS}
-    for seq_json, next_hit in rows:
-        try:
-            seq = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
-            if len(seq) > 0:
-                prev = seq[-1]
-                if prev in trans:
-                    trans[prev][next_hit] += 1
-        except:
-            continue
+    # Multi-Order Markov (Order 1 + 2 + 3)
+    for order in [1, 2, 3]:
+        trans = {}
+        for seq_json, next_hit in rows:
+            try:
+                seq = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
+                if len(seq) < order:
+                    continue
+                key = tuple(seq[-order:])
+                if key not in trans:
+                    trans[key] = Counter()
+                trans[key][next_hit] += 1
+            except:
+                continue
 
-    if last_hit in trans:
-        total = sum(trans[last_hit].values()) + len(ITEMS)  # Laplace smoothing
-        for item in ITEMS:
-            count = trans[last_hit][item] + 1
-            scores[item] += (count / total) * 420
+        weight = {1: 100, 2: 75, 3: 55}[order]
+        key = tuple(sequence[-order:]) if len(sequence) >= order else ()
+        
+        if key in trans:
+            total = sum(trans[key].values()) + len(ITEMS) * 2
+            for item in ITEMS:
+                count = trans[key][item] + 2
+                scores[item] += (count / total) * weight
 
-    # 2. Higher-order + exact + streak matching
+    # Pattern Matching قوي (Exact Suffix)
     for seq_json, next_hit in rows:
         try:
             seq = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
             seq_t = tuple(seq)
-            if len(seq_t) < 2:
-                continue
-
-            # Exact full sequence match
-            if seq_t == seq_tuple:
-                scores[next_hit] += 320
-
-            # Multi-order suffix match (2 to 6)
-            for length in range(2, 7):
-                if len(seq_t) >= length and len(seq_tuple) >= length:
-                    if seq_t[-length:] == seq_tuple[-length:]:
-                        scores[next_hit] += 95 // length + 45
-
-            # Streak match from the end
-            match_len = 0
-            for i in range(1, min(7, len(seq_t), len(seq_tuple)) + 1):
-                if seq_t[-i] == seq_tuple[-i]:
-                    match_len += 1
+            
+            # Exact matches
+            for length in range(3, 7):
+                if len(seq_t) >= length and len(current_seq) >= length:
+                    if seq_t[-length:] == current_seq[-length:]:
+                        scores[next_hit] += 145 if length >= 5 else 95
+            
+            # Streak detection
+            streak = 0
+            for i in range(1, min(5, len(seq_t), len(current_seq))+1):
+                if seq_t[-i] == current_seq[-i]:
+                    streak += 1
                 else:
                     break
-            if match_len >= 2:
-                scores[next_hit] += match_len * 32
-
+            if streak >= 3:
+                scores[next_hit] += streak * 28
         except:
             continue
 
-    # 3. Global fallback (إذا ما في بيانات كافية)
-    global_count = Counter()
-    for _, next_hit in rows:
-        global_count[next_hit] += 1
-    if max(scores.values()) == 0:
-        for item in ITEMS:
-            scores[item] += global_count[item] * 8
+    # Global bias
+    global_count = Counter([row[1] for row in rows])
+    total_g = sum(global_count.values()) or 1
+    for item in ITEMS:
+        scores[item] += (global_count[item] / total_g) * 38
 
+    # ترتيب نهائي
     sorted_items = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    return [item[0] for item in sorted_items]
+    return [item[0] for item in sorted_items[:5]]
 
 # ────────────────────────────────────────────────
 # SHOW PREDICTION
@@ -365,10 +362,15 @@ async def show_prediction(message, user_id):
     round_num = sessions[user_id]["round_number"]
     predictions = predict_sequence(sequence)
     
-    text = f"**الجولة {round_num}**  🎯 التوقعات الأقوى\n\n"
-    text += f"التسلسل الحالي: {' '.join(sequence)}\n\n"
-    text += "\n".join(f"{i+1}️⃣ {p}" for i, p in enumerate(predictions[:4]))
-    text += "\n\nاختر النتيجة الحقيقية لهذه الجولة"
+    text = f"""**الجولة {round_num}** 🎯 التوقعات الذكية
+
+التسلسل الحالي: {' '.join(sequence)}
+
+**🔥 أقوى تخمين:** {predictions[0]}
+**📊 تخمين متوسط:** {predictions[1]}
+**🛡️ تأمين:** {predictions[2]}
+
+اختر النتيجة الحقيقية لهذه الجولة"""
 
     await message.reply_text(text, reply_markup=build_result_keyboard())
 
@@ -405,10 +407,15 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     round_num = sessions[user_id]["round_number"]
     predictions = predict_sequence(new_sequence)
 
-    text = f"**الجولة {round_num}**  🎯 الجولة الجديدة\n\n"
-    text += f"التسلسل الحالي: {' '.join(new_sequence)}\n\n"
-    text += "\n".join(f"{i+1}️⃣ {p}" for i, p in enumerate(predictions[:4]))
-    text += "\n\nاختر النتيجة الحقيقية"
+    text = f"""**الجولة {round_num}** 🎯 الجولة الجديدة
+
+التسلسل الحالي: {' '.join(new_sequence)}
+
+**🔥 أقوى تخمين:** {predictions[0]}
+**📊 تخمين متوسط:** {predictions[1]}
+**🛡️ تأمين:** {predictions[2]}
+
+اختر النتيجة الحقيقية"""
 
     await query.message.reply_text(text, reply_markup=build_result_keyboard())
 
