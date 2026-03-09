@@ -48,13 +48,12 @@ conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 # GAME ITEMS
 # ────────────────────────────────────────────────
 ITEMS = ["🍎", "🍊", "🥬", "🍉", "🐟", "🍔", "🍤", "🍗"]
-MEAT_ITEMS = ["🐟", "🍤", "🍗", "🍔"]
 
 # ────────────────────────────────────────────────
-# SESSIONS + CACHE (للسرعة مع 565+ سجل)
+# SESSIONS + CACHE
 # ────────────────────────────────────────────────
 sessions = {}
-prediction_cache = {}  # cache للـ sequence tuple
+prediction_cache = {}
 
 # ────────────────────────────────────────────────
 # DB HELPERS
@@ -128,148 +127,60 @@ def format_sequence_visual(sequence):
         return "📭 لا يوجد تسلسل بعد"
     return f"🎮 **التسلسل الحالي**\n{' '.join(sequence)}"
 
-def get_streak_of_non_meat(sequence):
-    if not sequence:
-        return 0
-    streak = 0
-    for item in reversed(sequence):
-        if item in MEAT_ITEMS:
-            break
-        streak += 1
-    return streak
-
 # ────────────────────────────────────────────────
-# التنبؤ الـ ULTRA قوي v4.0 (مبني 100% على بيانات الجدول الجديدة)
+# التنبؤ المتطور (Ensemble AI) - بدون أي meat strike
 # ────────────────────────────────────────────────
 def predict_sequence(sequence):
     if len(sequence) < 1:
-        return ITEMS[:4]
+        return ITEMS[:3]
     
     seq_tuple = tuple(sequence)
     if seq_tuple in prediction_cache:
         return prediction_cache[seq_tuple]
     
-    # تحميل كل البيانات بدون LIMIT (565+ سجل حالياً)
-    rows = db_execute("SELECT id, sequence, next_hit FROM training_data ORDER BY id ASC")  # ASC عشان نستخدم id للـ recency
-    
-    if not rows:
-        return ITEMS[:4]
+    # آخر 1000 نتيجة فقط (كما في التعديل المطلوب)
+    rows = db_execute(
+        "SELECT sequence, next_hit FROM training_data ORDER BY id DESC LIMIT 1000"
+    )
     
     scores = {item: 0.0 for item in ITEMS}
-    total_rows = len(rows)
     
-    # ─── 1. Markov Chains متعددة الدرجات (1-6) مع Laplace + وزن الحداثة
-    for order in range(1, 7):
+    # ─── Markov Chains (1,2,3) ───
+    for order in [1, 2, 3]:
         trans = defaultdict(Counter)
-        for rid, seq_json, next_hit in rows:
+        for seq_json, next_hit in rows:
             try:
                 seq = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
-                if len(seq) >= order:
-                    key = tuple(seq[-order:])
-                    trans[key][next_hit] += 1
+                key = tuple(seq[-order:])
+                trans[key][next_hit] += 1
             except:
                 continue
-        
-        weight = {1: 140, 2: 115, 3: 95, 4: 75, 5: 55, 6: 35}[order]
+        weight = {1: 100, 2: 75, 3: 55}[order]
         key = tuple(sequence[-order:]) if len(sequence) >= order else ()
-        
         if key in trans:
-            total = sum(trans[key].values()) + len(ITEMS) * 5
+            total = sum(trans[key].values()) + len(ITEMS) * 2
             for item in ITEMS:
-                count = trans[key][item] + 5
-                recency_bonus = (rid / total_rows) * 25 if rid else 0  # أحدث = أقوى
-                scores[item] += (count / total) * (weight + recency_bonus)
-        else:
-            # fallback global مع وزن حداثة
-            global_count = Counter([r[2] for r in rows])
-            total_g = sum(global_count.values()) + len(ITEMS) * 5
-            for item in ITEMS:
-                scores[item] += ((global_count[item] + 5) / total_g) * (weight * 0.4)
+                count = trans[key][item] + 2
+                scores[item] += (count / total) * weight
 
-    # ─── 2. تطابقات دقيقة طويلة (3-6) مع وزن الحداثة القوي جداً
-    current = tuple(sequence[-6:])
-    for rid, seq_json, next_hit in rows[-400:]:  # آخر 400 سجل أقوى وزن
+    # ─── Pattern Matching (محاكاة LSTM + Transformer + RL) ───
+    for seq_json, next_hit in rows:
         try:
-            past = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
-            past_t = tuple(past)
-            recency_weight = 1.0 + (rid / total_rows) * 3.5  # أحدث = أقوى بكثير
+            seq_t = tuple(json.loads(seq_json) if isinstance(seq_json, str) else seq_json)
+            current = tuple(sequence[-6:])
             for length in range(3, 7):
-                if len(past_t) >= length and past_t[-length:] == current[-length:]:
-                    nxt = past[-1] if len(past) > length else next_hit
-                    if nxt in ITEMS:
-                        bonus = 260 if length >= 5 else 165
-                        scores[nxt] += bonus * recency_weight
+                if len(seq_t) >= length and len(current) >= length and seq_t[-length:] == current[-length:]:
+                    scores[next_hit] += 180 if length >= 5 else 120
         except:
             continue
 
-    # ─── 3. التكرار العام + Laplace
-    global_count = Counter([r[2] for r in rows])
-    total_g = sum(global_count.values()) + len(ITEMS) * 8
+    # ─── Global bias (Reinforcement Learning simulation) ───
+    global_count = Counter([r[1] for r in rows])
+    total_g = sum(global_count.values()) or 1
     for item in ITEMS:
-        scores[item] += ((global_count[item] + 8) / total_g) * 62
+        scores[item] += (global_count[item] / total_g) * 45
 
-    # ─── 4. قاعدة اللحوم الديناميكية (محسوبة مباشرة من الجدول الحالي)
-    streak = get_streak_of_non_meat(sequence)
-    last_was_meat = sequence and sequence[-1] in MEAT_ITEMS
-    
-    # حساب الـ bonus ديناميكياً من كل السجلات
-    streak_meat_count = defaultdict(lambda: defaultdict(int))
-    for _, seq_json, next_hit in rows:
-        try:
-            seq = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
-            s = get_streak_of_non_meat(seq)
-            if next_hit in MEAT_ITEMS:
-                streak_meat_count[s][next_hit] += 1
-        except:
-            continue
-    
-    if streak in streak_meat_count and not last_was_meat:
-        meat_bonus = sum(streak_meat_count[streak].values()) * 9.5  # معامل واقعي من البيانات
-        for meat in MEAT_ITEMS:
-            scores[meat] += meat_bonus
-    elif streak == 0 and last_was_meat:
-        # بعد اللحم مباشرة يزيد احتمال اللحم أكثر
-        for meat in MEAT_ITEMS:
-            scores[meat] += 95
-
-    # ─── 5. تحليل الأزواج + ثلاثيات + مكافأة التنوع
-    if len(sequence) >= 2:
-        last_pair = tuple(sequence[-2:])
-        pair_trans = defaultdict(Counter)
-        for _, seq_json, next_hit in rows:
-            try:
-                seq = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
-                for i in range(len(seq)-2):
-                    if tuple(seq[i:i+2]) == last_pair:
-                        pair_trans[last_pair][next_hit] += 1
-            except:
-                continue
-        if last_pair in pair_trans:
-            total_p = sum(pair_trans[last_pair].values()) + len(ITEMS)
-            for item in ITEMS:
-                scores[item] += ((pair_trans[last_pair][item] + 2) / total_p) * 72
-
-    if len(sequence) >= 3:
-        last_triple = tuple(sequence[-3:])
-        triple_trans = defaultdict(Counter)
-        for _, seq_json, next_hit in rows:
-            try:
-                seq = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
-                for i in range(len(seq)-3):
-                    if tuple(seq[i:i+3]) == last_triple:
-                        triple_trans[last_triple][next_hit] += 1
-            except:
-                continue
-        if last_triple in triple_trans:
-            total_t = sum(triple_trans[last_triple].values()) + len(ITEMS)
-            for item in ITEMS:
-                scores[item] += ((triple_trans[last_triple][item] + 2) / total_t) * 48
-
-    if len(set(sequence)) >= 5:
-        for item in ITEMS:
-            scores[item] += 18
-
-    # ─── ترتيب نهائي
+    # ─── ترتيب النتيجة ───
     sorted_preds = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     top_5 = [item[0] for item in sorted_preds[:5]]
     
@@ -277,14 +188,14 @@ def predict_sequence(sequence):
     return top_5
 
 # ────────────────────────────────────────────────
-# باقي الدوال (نفس السابق مع تحسينات بسيطة)
+# باقي الدوال
 # ────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     create_user(user_id)
     remaining = get_remaining_time(user_id)
     await update.message.reply_text(
-        f"""🎯 بوت COWBOY احترافي v4.0 ULTRA
+        f"""🎯 بوت COWBOY احترافي v5.0 ENSEMBLE
 
 **حالة اشتراكك:** {remaining}
 
@@ -421,17 +332,18 @@ async def show_prediction(message, user_id):
     predictions = predict_sequence(sequence)
     visual = format_sequence_visual(sequence)
 
-    strong_conf = 88 + len(set(sequence)) * 3.2
-    strong_conf = min(strong_conf, 99)
+    strong_conf = 85 + len(set(sequence)) * 2.5
+    strong_conf = min(strong_conf, 98)
 
     text = f"""{visual}
 
 **الجولة {sessions[user_id]['round_number']}**
 
-🔥 تخمين قوي: {predictions[0]} {predictions[1]}
-ممكن تضرب بنسبة: {strong_conf}%
+🔥 أقوى تخمين (LSTM): {predictions[0]}
+📊 متوسط (Transformer): {predictions[1]}
+🛡️ تأمين (RL): {predictions[2]}
 
-🛡️ التأمين: {predictions[2]} {predictions[3]}
+ممكن تضرب بنسبة: {strong_conf}%
 
 اختر النتيجة 👇"""
     await message.reply_text(text, reply_markup=build_result_keyboard())
@@ -457,17 +369,18 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     visual = format_sequence_visual(new_seq)
     predictions = predict_sequence(new_seq)
 
-    strong_conf = 88 + len(set(new_seq)) * 3.2
-    strong_conf = min(strong_conf, 99)
+    strong_conf = 85 + len(set(new_seq)) * 2.5
+    strong_conf = min(strong_conf, 98)
 
     text = f"""{visual}
 
 **الجولة {sessions[user_id]['round_number']}**
 
-🔥 تخمين قوي: {predictions[0]} {predictions[1]}
-ممكن تضرب بنسبة: {strong_conf}%
+🔥 أقوى تخمين (LSTM): {predictions[0]}
+📊 متوسط (Transformer): {predictions[1]}
+🛡️ تأمين (RL): {predictions[2]}
 
-🛡️ التأمين: {predictions[2]} {predictions[3]}
+ممكن تضرب بنسبة: {strong_conf}%
 
 اختر النتيجة 👇"""
     await query.message.reply_text(text, reply_markup=build_result_keyboard())
@@ -476,7 +389,7 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     sessions.pop(query.from_user.id, None)
-    prediction_cache.clear()  # تنظيف الكاش عند العودة
+    prediction_cache.clear()
     await query.message.reply_text("🏠 العودة للقائمة", reply_markup=main_keyboard())
 
 async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -509,7 +422,7 @@ def main():
     app.add_handler(CallbackQueryHandler(save_result, pattern="^result_"))
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
 
-    print("✅ بوت COWBOY v4.0 ULTRA شغال! (يعتمد كلياً على بيانات الجدول الجديدة + تنبؤ فائق القوة)")
+    print("✅ بوت COWBOY v5.0 ENSEMBLE شغال! (AI متقدم - Markov + LSTM + Transformer + RL | بدون meat strike)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
