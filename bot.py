@@ -128,7 +128,7 @@ def format_sequence_visual(sequence):
     return f"🎮 **التسلسل الحالي**\n{' '.join(sequence)}"
 
 # ────────────────────────────────────────────────
-# التنبؤ المتطور (Ensemble AI) - بدون أي meat strike
+# التنبؤ المتطور (Ensemble AI)
 # ────────────────────────────────────────────────
 def predict_sequence(sequence):
     if len(sequence) < 1:
@@ -138,14 +138,13 @@ def predict_sequence(sequence):
     if seq_tuple in prediction_cache:
         return prediction_cache[seq_tuple]
     
-    # آخر 1000 نتيجة فقط (كما في التعديل المطلوب)
     rows = db_execute(
         "SELECT sequence, next_hit FROM training_data ORDER BY id DESC LIMIT 1000"
     )
     
     scores = {item: 0.0 for item in ITEMS}
     
-    # ─── Markov Chains (1,2,3) ───
+    # Markov Chains (1,2,3)
     for order in [1, 2, 3]:
         trans = defaultdict(Counter)
         for seq_json, next_hit in rows:
@@ -163,7 +162,7 @@ def predict_sequence(sequence):
                 count = trans[key][item] + 2
                 scores[item] += (count / total) * weight
 
-    # ─── Pattern Matching (محاكاة LSTM + Transformer + RL) ───
+    # Pattern Matching
     for seq_json, next_hit in rows:
         try:
             seq_t = tuple(json.loads(seq_json) if isinstance(seq_json, str) else seq_json)
@@ -174,13 +173,13 @@ def predict_sequence(sequence):
         except:
             continue
 
-    # ─── Global bias (Reinforcement Learning simulation) ───
+    # Global bias
     global_count = Counter([r[1] for r in rows])
     total_g = sum(global_count.values()) or 1
     for item in ITEMS:
         scores[item] += (global_count[item] / total_g) * 45
 
-    # ─── ترتيب النتيجة ───
+    # ترتيب النتيجة
     sorted_preds = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     top_5 = [item[0] for item in sorted_preds[:5]]
     
@@ -332,27 +331,27 @@ async def show_prediction(message, user_id):
     predictions = predict_sequence(sequence)
     visual = format_sequence_visual(sequence)
 
-    strong_conf = 85 + len(set(sequence)) * 2.5
-    strong_conf = min(strong_conf, 98)
+    # أعلى 4 فقط + نسب تقريبية
+    top4 = predictions[:4]
+    percents = [42, 29, 18, 11]   # يمكنك تغيير التوزيع حسب رغبتك (المجموع 100)
+
+    lines = [f"{item}  {perc}%" for item, perc in zip(top4, percents)]
 
     text = f"""{visual}
 
 **الجولة {sessions[user_id]['round_number']}**
 
-🔥 أقوى تخمين (LSTM): {predictions[0]}
-📊 متوسط (Transformer): {predictions[1]}
-🛡️ تأمين (RL): {predictions[2]}
-
-ممكن تضرب بنسبة: {strong_conf}%
+{' • '.join(lines)}
 
 اختر النتيجة 👇"""
+
     await message.reply_text(text, reply_markup=build_result_keyboard())
 
 async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
     result = query.data.replace("result_", "")
+    user_id = query.from_user.id
     sequence = sessions[user_id]["hits"]
 
     user = get_user(user_id)
@@ -366,23 +365,22 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sessions[user_id]["hits"] = new_seq
     sessions[user_id]["round_number"] += 1
 
-    visual = format_sequence_visual(new_seq)
     predictions = predict_sequence(new_seq)
+    visual = format_sequence_visual(new_seq)
 
-    strong_conf = 85 + len(set(new_seq)) * 2.5
-    strong_conf = min(strong_conf, 98)
+    top4 = predictions[:4]
+    percents = [42, 29, 18, 11]
+
+    lines = [f"{item}  {perc}%" for item, perc in zip(top4, percents)]
 
     text = f"""{visual}
 
 **الجولة {sessions[user_id]['round_number']}**
 
-🔥 أقوى تخمين (LSTM): {predictions[0]}
-📊 متوسط (Transformer): {predictions[1]}
-🛡️ تأمين (RL): {predictions[2]}
-
-ممكن تضرب بنسبة: {strong_conf}%
+{' • '.join(lines)}
 
 اختر النتيجة 👇"""
+
     await query.message.reply_text(text, reply_markup=build_result_keyboard())
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -422,7 +420,7 @@ def main():
     app.add_handler(CallbackQueryHandler(save_result, pattern="^result_"))
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
 
-    print("✅ بوت COWBOY v5.0 ENSEMBLE شغال! (AI متقدم - Markov + LSTM + Transformer + RL | بدون meat strike)")
+    print("✅ بوت COWBOY v5.0 ENSEMBLE شغال! (معدل - عرض 4 توقعات + نسب فقط)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
