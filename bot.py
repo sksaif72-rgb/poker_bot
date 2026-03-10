@@ -51,6 +51,8 @@ ITEMS = ["🍎", "🍊", "🥬", "🍉", "🐟", "🍔", "🍤", "🍗"]
 FRUITS = ["🍎", "🍊", "🥬", "🍉"]
 MEATS  = ["🐟", "🍔", "🍤", "🍗"]
 
+WINDOW_SIZE = 5   # يعتمد فقط على آخر 5 ضربات (كما طلبت)
+
 # ────────────────────────────────────────────────
 # SESSIONS + CACHE
 # ────────────────────────────────────────────────
@@ -127,99 +129,120 @@ def build_result_keyboard():
 def format_sequence_visual(sequence):
     if not sequence:
         return "📭 لا يوجد تسلسل بعد"
-    return f"🎮 **التسلسل الحالي**\n{' '.join(sequence)}"
+    return f"🎰 **آخر {min(len(sequence), WINDOW_SIZE)} ضربة**\n{'  •  '.join(sequence[-WINDOW_SIZE:])}"
 
 # ────────────────────────────────────────────────
-# التنبؤ المتطور → 3 فواكه + 3 لحوم + نسب حقيقية 100%
+# التنبؤ المتطور (يعتمد على آخر 5 ضربات + قاعدة البيانات)
 # ────────────────────────────────────────────────
 def predict_sequence(sequence):
     if len(sequence) < 1:
-        top_fruits = FRUITS[:3]
-        top_meats  = MEATS[:3]
-        selected = top_fruits + top_meats
-        percents = [20, 18, 17, 16, 15, 14]  # افتراضي
+        selected = FRUITS + MEATS
+        percents = [18, 16, 15, 14, 13, 9, 8, 7]
         prediction_cache[()] = (selected, percents)
         return selected, percents
 
-    seq_tuple = tuple(sequence)
-    if seq_tuple in prediction_cache:
-        return prediction_cache[seq_tuple]
+    # نأخذ فقط آخر 5 ضربات (كما طلبت)
+    recent = sequence[-WINDOW_SIZE:]
+    cache_key = tuple(recent)
+    if cache_key in prediction_cache:
+        return prediction_cache[cache_key]
 
+    # جلب البيانات من قاعدة البيانات
     rows = db_execute(
-        "SELECT sequence, next_hit FROM training_data ORDER BY id DESC LIMIT 1000"
+        "SELECT sequence, next_hit FROM training_data ORDER BY id DESC LIMIT 3000"
     )
 
     scores = {item: 0.0 for item in ITEMS}
 
-    # Markov Chains (1,2,3)
-    for order in [1, 2, 3]:
+    # Markov Chains (تركيز قوي على آخر 5)
+    for order in [1, 2, 3, 4]:
         trans = defaultdict(Counter)
         for seq_json, next_hit in rows:
             try:
                 seq = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
+                if len(seq) < order: continue
                 key = tuple(seq[-order:])
                 trans[key][next_hit] += 1
             except:
                 continue
-        weight = {1: 100, 2: 75, 3: 55}[order]
-        key = tuple(sequence[-order:]) if len(sequence) >= order else ()
+        weight = {1: 220, 2: 140, 3: 70, 4: 30}[order]
+        k = min(order, len(recent))
+        key = tuple(recent[-k:])
         if key in trans:
-            total = sum(trans[key].values()) + len(ITEMS) * 2
+            total = sum(trans[key].values()) + len(ITEMS) * 4
             for item in ITEMS:
-                count = trans[key][item] + 2
-                scores[item] += (count / total) * weight
+                scores[item] += ((trans[key][item] + 4) / total) * weight
 
-    # Pattern Matching
-    for seq_json, next_hit in rows:
-        try:
-            seq_t = tuple(json.loads(seq_json) if isinstance(seq_json, str) else seq_json)
-            current = tuple(sequence[-6:])
-            for length in range(3, 7):
-                if len(seq_t) >= length and len(current) >= length and seq_t[-length:] == current[-length:]:
-                    scores[next_hit] += 180 if length >= 5 else 120
-        except:
-            continue
+    # Recency Bias + Hot/Cold داخل آخر 5
+    if len(recent) >= 2:
+        window_count = Counter(recent)
+        for item in ITEMS:
+            freq = window_count[item] / len(recent)
+            scores[item] += freq * 180
+            if freq == 0:
+                scores[item] += 25
 
-    # Global bias
+    # Streak & Alternation
+    if len(recent) >= 3:
+        last_three = recent[-3:]
+        if last_three[0] == last_three[1] == last_three[2]:
+            for item in ITEMS:
+                if item != recent[-1]:
+                    scores[item] += 90
+        elif last_three[0] != last_three[1] and last_three[1] != last_three[2]:
+            for item in [i for i in ITEMS if i != recent[-1]]:
+                scores[item] += 65
+
+    # انتقال مباشر من آخر عنصر (قوي جداً)
+    if recent:
+        last = recent[-1]
+        trans_last = Counter()
+        for seq_json, next_hit in rows:
+            try:
+                seq = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
+                if seq and seq[-1] == last:
+                    trans_last[next_hit] += 1
+            except:
+                continue
+        if trans_last:
+            tot = sum(trans_last.values()) + len(ITEMS) * 3
+            for item in ITEMS:
+                scores[item] += ((trans_last[item] + 3) / tot) * 260
+
+    # Global bias خفيف
     global_count = Counter([r[1] for r in rows])
     total_g = sum(global_count.values()) or 1
     for item in ITEMS:
-        scores[item] += (global_count[item] / total_g) * 45
+        scores[item] += (global_count[item] / total_g) * 15
 
-    # ───── اختيار 3 فواكه + 3 لحوم ─────
+    # ───── ترتيب الفواكه واللحوم بشكل منفصل ─────
     sorted_fruits = sorted(FRUITS, key=lambda x: scores[x], reverse=True)
     sorted_meats  = sorted(MEATS,  key=lambda x: scores[x], reverse=True)
+    selected_items = sorted_fruits + sorted_meats
 
-    top3_fruits = sorted_fruits[:3]
-    top3_meats  = sorted_meats[:3]
-
-    selected_items = top3_fruits + top3_meats
-
-    # ───── حساب نسب مئوية حقيقية فقط على الـ6 المختارين ─────
-    selected_scores = [scores[item] for item in selected_items]
+    # ───── نسب مئوية ديناميكية حقيقية لكل الـ8 عناصر (مجموع 100%) ─────
+    selected_scores = [max(scores[item], 1) for item in selected_items]
     total_sel = sum(selected_scores) or 1
     percents = [round((s / total_sel) * 100) for s in selected_scores]
 
-    # تصحيح ليكون المجموع 100% بالضبط
-    current_sum = sum(percents)
-    diff = 100 - current_sum
+    # تصحيح دقيق ليكون المجموع بالضبط 100
+    diff = 100 - sum(percents)
     if diff != 0:
-        # نضيف/نطرح الفرق من أعلى قيمة
         max_idx = percents.index(max(percents))
         percents[max_idx] += diff
 
-    prediction_cache[seq_tuple] = (selected_items, percents)
+    prediction_cache[cache_key] = (selected_items, percents)
     return selected_items, percents
 
 # ────────────────────────────────────────────────
-# باقي الدوال (مع تعديل بسيط في عرض التوقع)
+# باقي الدوال
 # ────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     create_user(user_id)
     remaining = get_remaining_time(user_id)
     await update.message.reply_text(
-        f"""🎯 بوت COWBOY v5.2 ENSEMBLE (3 فواكه + 3 لحوم)
+        f"""🎯 بوت COWBOY v5.4 ENSEMBLE (كل الـ8 مع نسب حقيقية)
 
 **حالة اشتراكك:** {remaining}
 
@@ -356,25 +379,23 @@ async def show_prediction(message, user_id):
     selected_items, percents = predict_sequence(sequence)
     visual = format_sequence_visual(sequence)
 
-    # تقسيم لعرض أوضح
-    fruits_part = selected_items[:3]
-    meats_part  = selected_items[3:]
-    fruits_perc = percents[:3]
-    meats_perc  = percents[3:]
+    fruits_part = selected_items[:4]
+    meats_part  = selected_items[4:]
+    fruits_perc = percents[:4]
+    meats_perc  = percents[4:]
 
-    lines = []
-    for i, item in enumerate(fruits_part):
-        lines.append(f"🍏 {item} → {fruits_perc[i]}%")
-    lines.append("──────────────")
-    for i, item in enumerate(meats_part):
-        lines.append(f"🍖 {item} → {meats_perc[i]}%")
+    fruit_line = " • ".join([f"{item} {p}%" for item, p in zip(fruits_part, fruits_perc)])
+    meat_line  = " • ".join([f"{item} {p}%" for item, p in zip(meats_part, meats_perc)])
 
     text = f"""{visual}
 
-**الجولة {sessions[user_id]['round_number']}**  
-(أقوى 3 فواكه + أقوى 3 لحوم)
+**الجولة {sessions[user_id]['round_number']}**
 
-{' | '.join([f"{item} {p}%" for item,p in zip(selected_items, percents)])}
+**🍏 الفواكه:**
+{fruit_line}
+
+**🍖 اللحوم:**
+{meat_line}
 
 اختر النتيجة الفعلية 👇"""
 
@@ -401,24 +422,23 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     selected_items, percents = predict_sequence(new_seq)
     visual = format_sequence_visual(new_seq)
 
-    fruits_part = selected_items[:3]
-    meats_part  = selected_items[3:]
-    fruits_perc = percents[:3]
-    meats_perc  = percents[3:]
+    fruits_part = selected_items[:4]
+    meats_part  = selected_items[4:]
+    fruits_perc = percents[:4]
+    meats_perc  = percents[4:]
 
-    lines = []
-    for i, item in enumerate(fruits_part):
-        lines.append(f"🍏 {item} → {fruits_perc[i]}%")
-    lines.append("──────────────")
-    for i, item in enumerate(meats_part):
-        lines.append(f"🍖 {item} → {meats_perc[i]}%")
+    fruit_line = " • ".join([f"{item} {p}%" for item, p in zip(fruits_part, fruits_perc)])
+    meat_line  = " • ".join([f"{item} {p}%" for item, p in zip(meats_part, meats_perc)])
 
     text = f"""{visual}
 
-**الجولة {sessions[user_id]['round_number']}**  
-(أقوى 3 فواكه + أقوى 3 لحوم)
+**الجولة {sessions[user_id]['round_number']}**
 
-{' | '.join([f"{item} {p}%" for item,p in zip(selected_items, percents)])}
+**🍏 الفواكه:**
+{fruit_line}
+
+**🍖 اللحوم:**
+{meat_line}
 
 اختر النتيجة الفعلية 👇"""
 
@@ -461,7 +481,7 @@ def main():
     app.add_handler(CallbackQueryHandler(save_result, pattern="^result_"))
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
 
-    print("✅ بوت COWBOY v5.2 ENSEMBLE شغال! (3 فواكه + 3 لحوم + نسب حقيقية 100%)")
+    print("✅ بوت COWBOY v5.4 ENSEMBLE ")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
