@@ -51,7 +51,7 @@ ITEMS = ["🍎", "🍊", "🥬", "🍉", "🐟", "🍔", "🍤", "🍗"]
 FRUITS = ["🍎", "🍊", "🥬", "🍉"]
 MEATS  = ["🐟", "🍔", "🍤", "🍗"]
 
-WINDOW_SIZE = 5   # يعتمد فقط على آخر 5 ضربات (كما طلبت)
+WINDOW_SIZE = 7   # ← التعديل المطلوب: آخر 7 ضربات فقط
 
 # ────────────────────────────────────────────────
 # SESSIONS + CACHE
@@ -132,30 +132,30 @@ def format_sequence_visual(sequence):
     return f"🎰 **آخر {min(len(sequence), WINDOW_SIZE)} ضربة**\n{'  •  '.join(sequence[-WINDOW_SIZE:])}"
 
 # ────────────────────────────────────────────────
-# التنبؤ المتطور (يعتمد على آخر 5 ضربات + قاعدة البيانات)
+# ENGINE محسن عالي الجودة v5.5 (آخر 7 ضربات + training_data)
 # ────────────────────────────────────────────────
 def predict_sequence(sequence):
     if len(sequence) < 1:
-        selected = FRUITS + MEATS
-        percents = [18, 16, 15, 14, 13, 9, 8, 7]
+        selected = FRUITS[:3] + MEATS[:2]
+        percents = [24, 21, 19, 20, 16]
         prediction_cache[()] = (selected, percents)
         return selected, percents
 
-    # نأخذ فقط آخر 5 ضربات (كما طلبت)
+    # نأخذ فقط آخر 7 ضربات
     recent = sequence[-WINDOW_SIZE:]
     cache_key = tuple(recent)
     if cache_key in prediction_cache:
         return prediction_cache[cache_key]
 
-    # جلب البيانات من قاعدة البيانات
+    # جلب البيانات من قاعدة البيانات (أحدث 4000 سجل للدقة العالية)
     rows = db_execute(
-        "SELECT sequence, next_hit FROM training_data ORDER BY id DESC LIMIT 3000"
+        "SELECT sequence, next_hit FROM training_data ORDER BY id DESC LIMIT 4000"
     )
 
     scores = {item: 0.0 for item in ITEMS}
 
-    # Markov Chains (تركيز قوي على آخر 5)
-    for order in [1, 2, 3, 4]:
+    # 1. Multi-order Markov Chains (مُحسّن لآخر 7)
+    for order in [1, 2, 3, 4, 5]:
         trans = defaultdict(Counter)
         for seq_json, next_hit in rows:
             try:
@@ -165,35 +165,41 @@ def predict_sequence(sequence):
                 trans[key][next_hit] += 1
             except:
                 continue
-        weight = {1: 220, 2: 140, 3: 70, 4: 30}[order]
+        weight = {1: 240, 2: 160, 3: 95, 4: 55, 5: 25}[order]
         k = min(order, len(recent))
         key = tuple(recent[-k:])
         if key in trans:
-            total = sum(trans[key].values()) + len(ITEMS) * 4
+            total = sum(trans[key].values()) + len(ITEMS) * 5
             for item in ITEMS:
-                scores[item] += ((trans[key][item] + 4) / total) * weight
+                scores[item] += ((trans[key][item] + 5) / total) * weight
 
-    # Recency Bias + Hot/Cold داخل آخر 5
-    if len(recent) >= 2:
+    # 2. Recency Bias + Hot/Cold داخل آخر 7 (أقوى وزن)
+    if len(recent) >= 3:
         window_count = Counter(recent)
+        for i, item in enumerate(recent):
+            recency_weight = (i + 1) / len(recent) * 2.5   # أحدث = أقوى
+            scores[item] += recency_weight * 95
+
         for item in ITEMS:
             freq = window_count[item] / len(recent)
-            scores[item] += freq * 180
+            scores[item] += freq * 210
             if freq == 0:
-                scores[item] += 25
+                scores[item] += 35   # cold items فرصة رجوع
 
-    # Streak & Alternation
-    if len(recent) >= 3:
-        last_three = recent[-3:]
-        if last_three[0] == last_three[1] == last_three[2]:
-            for item in ITEMS:
-                if item != recent[-1]:
-                    scores[item] += 90
-        elif last_three[0] != last_three[1] and last_three[1] != last_three[2]:
-            for item in [i for i in ITEMS if i != recent[-1]]:
-                scores[item] += 65
+    # 3. Pattern Matching دقيق (تطابق تسلسلات من 3 إلى 6 داخل آخر 7)
+    current = tuple(recent)
+    for seq_json, next_hit in rows:
+        try:
+            seq_t = tuple(json.loads(seq_json) if isinstance(seq_json, str) else seq_json)
+            for length in range(3, 7):
+                if len(seq_t) >= length and len(current) >= length:
+                    if seq_t[-length:] == current[-length:]:
+                        bonus = 220 if length >= 5 else 140
+                        scores[next_hit] += bonus
+        except:
+            continue
 
-    # انتقال مباشر من آخر عنصر (قوي جداً)
+    # 4. انتقال مباشر من آخر عنصر (أقوى عامل)
     if recent:
         last = recent[-1]
         trans_last = Counter()
@@ -205,27 +211,27 @@ def predict_sequence(sequence):
             except:
                 continue
         if trans_last:
-            tot = sum(trans_last.values()) + len(ITEMS) * 3
+            tot = sum(trans_last.values()) + len(ITEMS) * 4
             for item in ITEMS:
-                scores[item] += ((trans_last[item] + 3) / tot) * 260
+                scores[item] += ((trans_last[item] + 4) / tot) * 280
 
-    # Global bias خفيف
+    # 5. Global bias خفيف جداً (للتوازن فقط)
     global_count = Counter([r[1] for r in rows])
     total_g = sum(global_count.values()) or 1
     for item in ITEMS:
-        scores[item] += (global_count[item] / total_g) * 15
+        scores[item] += (global_count[item] / total_g) * 12
 
-    # ───── ترتيب الفواكه واللحوم بشكل منفصل ─────
-    sorted_fruits = sorted(FRUITS, key=lambda x: scores[x], reverse=True)
-    sorted_meats  = sorted(MEATS,  key=lambda x: scores[x], reverse=True)
+    # ───── اختيار بالضبط 3 فواكه + 2 لحوم ─────
+    sorted_fruits = sorted(FRUITS, key=lambda x: scores[x], reverse=True)[:3]
+    sorted_meats  = sorted(MEATS,  key=lambda x: scores[x], reverse=True)[:2]
     selected_items = sorted_fruits + sorted_meats
 
-    # ───── نسب مئوية ديناميكية حقيقية لكل الـ8 عناصر (مجموع 100%) ─────
+    # ───── نسب مئوية ديناميكية حقيقية على الـ5 فقط (مجموع 100%) ─────
     selected_scores = [max(scores[item], 1) for item in selected_items]
     total_sel = sum(selected_scores) or 1
     percents = [round((s / total_sel) * 100) for s in selected_scores]
 
-    # تصحيح دقيق ليكون المجموع بالضبط 100
+    # تصحيح دقيق ليكون المجموع 100 بالضبط
     diff = 100 - sum(percents)
     if diff != 0:
         max_idx = percents.index(max(percents))
@@ -235,14 +241,87 @@ def predict_sequence(sequence):
     return selected_items, percents
 
 # ────────────────────────────────────────────────
-# باقي الدوال
+# عرض التوقع (3 فواكه + 2 لحوم)
+# ────────────────────────────────────────────────
+async def show_prediction(message, user_id):
+    sequence = sessions[user_id]["hits"]
+    selected_items, percents = predict_sequence(sequence)
+    visual = format_sequence_visual(sequence)
+
+    fruits_part = selected_items[:3]
+    meats_part  = selected_items[3:]
+    fruits_perc = percents[:3]
+    meats_perc  = percents[3:]
+
+    fruit_line = " • ".join([f"{item} {p}%" for item, p in zip(fruits_part, fruits_perc)])
+    meat_line  = " • ".join([f"{item} {p}%" for item, p in zip(meats_part, meats_perc)])
+
+    text = f"""{visual}
+
+**الجولة {sessions[user_id]['round_number']}** (آخر 7 ضربات)
+
+**🍏 أفضل 3 فواكه:**
+{fruit_line}
+
+**🍖 أفضل 2 لحوم:**
+{meat_line}
+
+اختر النتيجة الفعلية 👇"""
+
+    await message.reply_text(text, reply_markup=build_result_keyboard())
+
+async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    result = query.data.replace("result_", "")
+    user_id = query.from_user.id
+    sequence = sessions[user_id]["hits"]
+
+    user = get_user(user_id)
+    if user and user[0] == "CP":
+        db_execute("INSERT INTO user_results (telegram_id, last_hit, real_result) VALUES (%s,%s,%s)",
+                   (user_id, sequence[-1], result), commit=True)
+        db_execute("INSERT INTO training_data (last_hit, sequence, next_hit, trainer_id) VALUES (%s,%s,%s,%s)",
+                   (sequence[-1], json.dumps(sequence), result, user_id), commit=True)
+
+    new_seq = sequence[1:] + [result]
+    sessions[user_id]["hits"] = new_seq
+    sessions[user_id]["round_number"] += 1
+
+    selected_items, percents = predict_sequence(new_seq)
+    visual = format_sequence_visual(new_seq)
+
+    fruits_part = selected_items[:3]
+    meats_part  = selected_items[3:]
+    fruits_perc = percents[:3]
+    meats_perc  = percents[3:]
+
+    fruit_line = " • ".join([f"{item} {p}%" for item, p in zip(fruits_part, fruits_perc)])
+    meat_line  = " • ".join([f"{item} {p}%" for item, p in zip(meats_part, meats_perc)])
+
+    text = f"""{visual}
+
+**الجولة {sessions[user_id]['round_number']}** (آخر 7 ضربات)
+
+**🍏 أفضل 3 فواكه:**
+{fruit_line}
+
+**🍖 أفضل 2 لحوم:**
+{meat_line}
+
+اختر النتيجة الفعلية 👇"""
+
+    await query.message.reply_text(text, reply_markup=build_result_keyboard())
+
+# ────────────────────────────────────────────────
+# باقي الدوال (بدون تغيير)
 # ────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     create_user(user_id)
     remaining = get_remaining_time(user_id)
     await update.message.reply_text(
-        f"""🎯 بوت COWBOY v5.4 ENSEMBLE (كل الـ8 مع نسب حقيقية)
+        f"""🎯 بوت COWBOY v5.5 ENSEMBLE PRO (آخر 7 + 3 فواكه + 2 لحوم)
 
 **حالة اشتراكك:** {remaining}
 
@@ -374,76 +453,6 @@ async def back_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sessions[user_id]["hits"].pop()
     await ask_hit(query.message, user_id)
 
-async def show_prediction(message, user_id):
-    sequence = sessions[user_id]["hits"]
-    selected_items, percents = predict_sequence(sequence)
-    visual = format_sequence_visual(sequence)
-
-    fruits_part = selected_items[:4]
-    meats_part  = selected_items[4:]
-    fruits_perc = percents[:4]
-    meats_perc  = percents[4:]
-
-    fruit_line = " • ".join([f"{item} {p}%" for item, p in zip(fruits_part, fruits_perc)])
-    meat_line  = " • ".join([f"{item} {p}%" for item, p in zip(meats_part, meats_perc)])
-
-    text = f"""{visual}
-
-**الجولة {sessions[user_id]['round_number']}**
-
-**🍏 الفواكه:**
-{fruit_line}
-
-**🍖 اللحوم:**
-{meat_line}
-
-اختر النتيجة الفعلية 👇"""
-
-    await message.reply_text(text, reply_markup=build_result_keyboard())
-
-async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    result = query.data.replace("result_", "")
-    user_id = query.from_user.id
-    sequence = sessions[user_id]["hits"]
-
-    user = get_user(user_id)
-    if user and user[0] == "CP":
-        db_execute("INSERT INTO user_results (telegram_id, last_hit, real_result) VALUES (%s,%s,%s)",
-                   (user_id, sequence[-1], result), commit=True)
-        db_execute("INSERT INTO training_data (last_hit, sequence, next_hit, trainer_id) VALUES (%s,%s,%s,%s)",
-                   (sequence[-1], json.dumps(sequence), result, user_id), commit=True)
-
-    new_seq = sequence[1:] + [result]
-    sessions[user_id]["hits"] = new_seq
-    sessions[user_id]["round_number"] += 1
-
-    selected_items, percents = predict_sequence(new_seq)
-    visual = format_sequence_visual(new_seq)
-
-    fruits_part = selected_items[:4]
-    meats_part  = selected_items[4:]
-    fruits_perc = percents[:4]
-    meats_perc  = percents[4:]
-
-    fruit_line = " • ".join([f"{item} {p}%" for item, p in zip(fruits_part, fruits_perc)])
-    meat_line  = " • ".join([f"{item} {p}%" for item, p in zip(meats_part, meats_perc)])
-
-    text = f"""{visual}
-
-**الجولة {sessions[user_id]['round_number']}**
-
-**🍏 الفواكه:**
-{fruit_line}
-
-**🍖 اللحوم:**
-{meat_line}
-
-اختر النتيجة الفعلية 👇"""
-
-    await query.message.reply_text(text, reply_markup=build_result_keyboard())
-
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -481,7 +490,7 @@ def main():
     app.add_handler(CallbackQueryHandler(save_result, pattern="^result_"))
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
 
-    print("✅ بوت COWBOY v5.4 ENSEMBLE ")
+    print("✅ بوت COWBOY v5.5 PRO شغال! ")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
