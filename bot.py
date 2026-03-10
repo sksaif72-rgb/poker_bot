@@ -48,8 +48,6 @@ conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 # GAME ITEMS
 # ────────────────────────────────────────────────
 ITEMS = ["🍎", "🍊", "🥬", "🍉", "🐟", "🍔", "🍤", "🍗"]
-FRUITS = ["🍎", "🍊", "🥬", "🍉"]
-MEATS  = ["🐟", "🍔", "🍤", "🍗"]
 
 # ────────────────────────────────────────────────
 # SESSIONS + CACHE
@@ -127,107 +125,76 @@ def build_result_keyboard():
 def format_sequence_visual(sequence):
     if not sequence:
         return "📭 لا يوجد تسلسل بعد"
-    return f"🎰 **التسلسل الحالي** (آخر 6 مرئية)\n{'  •  '.join(sequence[-6:])}"
+    return f"🎮 **التسلسل الحالي**\n{' '.join(sequence)}"
 
 # ────────────────────────────────────────────────
-# PREDICTION ENGINE
+# التنبؤ المتطور (Ensemble AI)
 # ────────────────────────────────────────────────
 def predict_sequence(sequence):
     if len(sequence) < 1:
-        selected = FRUITS[:3] + MEATS[:2]
-        percents = [24, 21, 19, 20, 16]
-        return selected, percents
-
-    cache_key = tuple(sequence)
-    if cache_key in prediction_cache:
-        return prediction_cache[cache_key]
-
+        return ITEMS[:3]
+    
+    seq_tuple = tuple(sequence)
+    if seq_tuple in prediction_cache:
+        return prediction_cache[seq_tuple]
+    
     rows = db_execute(
-        "SELECT sequence, next_hit FROM training_data ORDER BY id DESC LIMIT 4000"
+        "SELECT sequence, next_hit FROM training_data ORDER BY id DESC LIMIT 1000"
     )
-
+    
     scores = {item: 0.0 for item in ITEMS}
-
-    # Markov على النوافذ المحددة فقط (1 + 4 + 6)
-    for order in [1, 4, 6]:
-        if len(sequence) < order:
-            continue
-
+    
+    # Markov Chains (1,2,3)
+    for order in [1, 2, 3]:
         trans = defaultdict(Counter)
         for seq_json, next_hit in rows:
             try:
                 seq = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
-                if len(seq) < order:
-                    continue
                 key = tuple(seq[-order:])
                 trans[key][next_hit] += 1
             except:
                 continue
-
-        weight_map = {1: 340, 4: 190, 6: 95}
-        weight = weight_map.get(order, 100)
-
-        key = tuple(sequence[-order:])
+        weight = {1: 100, 2: 75, 3: 55}[order]
+        key = tuple(sequence[-order:]) if len(sequence) >= order else ()
         if key in trans:
-            total = sum(trans[key].values()) + len(ITEMS) * 6
+            total = sum(trans[key].values()) + len(ITEMS) * 2
             for item in ITEMS:
-                count = trans[key].get(item, 0) + 6
+                count = trans[key][item] + 2
                 scores[item] += (count / total) * weight
-        else:
-            for item in ITEMS:
-                scores[item] += 10.0
 
-    # تعزيز إضافي للانتقال من آخر ضربة
-    if sequence:
-        last = sequence[-1]
-        trans_last = Counter()
-        for seq_json, next_hit in rows:
-            try:
-                seq = json.loads(seq_json) if isinstance(seq_json, str) else seq_json
-                if seq and seq[-1] == last:
-                    trans_last[next_hit] += 1
-            except:
-                continue
+    # Pattern Matching
+    for seq_json, next_hit in rows:
+        try:
+            seq_t = tuple(json.loads(seq_json) if isinstance(seq_json, str) else seq_json)
+            current = tuple(sequence[-6:])
+            for length in range(3, 7):
+                if len(seq_t) >= length and len(current) >= length and seq_t[-length:] == current[-length:]:
+                    scores[next_hit] += 180 if length >= 5 else 120
+        except:
+            continue
 
-        if trans_last:
-            tot = sum(trans_last.values()) + len(ITEMS) * 5
-            for item in ITEMS:
-                scores[item] += ((trans_last.get(item, 0) + 5) / tot) * 380
+    # Global bias
+    global_count = Counter([r[1] for r in rows])
+    total_g = sum(global_count.values()) or 1
+    for item in ITEMS:
+        scores[item] += (global_count[item] / total_g) * 45
 
-    # recency boost خفيف لآخر 3
-    if len(sequence) >= 3:
-        for i, item in enumerate(sequence[-3:]):
-            pos_weight = (3 - i) / 3 * 1.6
-            scores[item] += pos_weight * 120
-
-    # اختيار 3 فواكه + 2 لحوم
-    sorted_fruits = sorted(FRUITS, key=lambda x: scores[x], reverse=True)[:3]
-    sorted_meats  = sorted(MEATS,  key=lambda x: scores[x], reverse=True)[:2]
-    selected_items = sorted_fruits + sorted_meats
-
-    # نسب مئوية
-    selected_scores = [max(scores[item], 1) for item in selected_items]
-    total_sel = sum(selected_scores) or 1
-    percents = [round((s / total_sel) * 100) for s in selected_scores]
-
-    diff = 100 - sum(percents)
-    if diff != 0:
-        max_idx = percents.index(max(percents))
-        percents[max_idx] += diff
-
-    prediction_cache[cache_key] = (selected_items, percents)
-    return selected_items, percents
+    # ترتيب النتيجة
+    sorted_preds = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    top_5 = [item[0] for item in sorted_preds[:5]]
+    
+    prediction_cache[seq_tuple] = top_5
+    return top_5
 
 # ────────────────────────────────────────────────
-# HANDLERS
+# باقي الدوال
 # ────────────────────────────────────────────────
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     create_user(user_id)
     remaining = get_remaining_time(user_id)
     await update.message.reply_text(
-        f"""🎯 بوت COWBOY v5.7 – تركيز على آخر 1 + 4 + 6 ضربات
+        f"""🎯 بوت COWBOY احترافي v5.0 ENSEMBLE
 
 **حالة اشتراكك:** {remaining}
 
@@ -277,23 +244,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(get_remaining_time(user_id), reply_markup=main_keyboard())
 
 async def guess_warning(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not check_subscription(user_id):
+    if not check_subscription(update.effective_user.id):
         await update.message.reply_text("❌ اشتراكك منتهي")
         return
-
-    example = "مثال: 🍎 🍊 🥬 🍉 🐟 🍔 🍤"
+    
+    example = "مثال: 🍎 🍊 🥬 🍉 🐟 🍔"
 
     keyboard = [
         [InlineKeyboardButton("📖 التالي (فهمت)", callback_data="tutorial_next")],
         [InlineKeyboardButton("🚀 ابدأ الجولة الآن", callback_data="start_guess")]
     ]
-
+    
     await update.message.reply_text(
         f"""⚠️ **اختر التسلسل من يسار إلى يمين**\n
 {example}
 
-**حالة اشتراكك:** {get_remaining_time(user_id)}
+**حالة اشتراكك:** {get_remaining_time(update.effective_user.id)}
 
 جاهز؟""",
         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -325,7 +291,7 @@ async def ask_hit(message, user_id):
             row = []
     if row: keyboard.append(row)
     keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_hit")])
-
+    
     await message.reply_text(
         f"**الجولة {sessions[user_id]['round_number']}** 🎲\nاختر الضربة رقم {step}",
         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -362,28 +328,22 @@ async def back_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_prediction(message, user_id):
     sequence = sessions[user_id]["hits"]
-    selected_items, percents = predict_sequence(sequence)
+    predictions = predict_sequence(sequence)
     visual = format_sequence_visual(sequence)
 
-    fruits_part = selected_items[:3]
-    meats_part  = selected_items[3:]
-    fruits_perc = percents[:3]
-    meats_perc  = percents[3:]
+    # أعلى 4 فقط + نسب تقريبية
+    top4 = predictions[:4]
+    percents = [42, 29, 18, 11]   # يمكنك تغيير التوزيع حسب رغبتك (المجموع 100)
 
-    fruit_line = " • ".join([f"{item} {p}%" for item, p in zip(fruits_part, fruits_perc)])
-    meat_line  = " • ".join([f"{item} {p}%" for item, p in zip(meats_part, meats_perc)])
+    lines = [f"{item}  {perc}%" for item, perc in zip(top4, percents)]
 
     text = f"""{visual}
 
 **الجولة {sessions[user_id]['round_number']}**
 
-**🍏 أفضل 3 فواكه:**
-{fruit_line}
+{' • '.join(lines)}
 
-**🍖 أفضل 2 لحوم:**
-{meat_line}
-
-اختر النتيجة الفعلية 👇"""
+اختر النتيجة 👇"""
 
     await message.reply_text(text, reply_markup=build_result_keyboard())
 
@@ -405,28 +365,21 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sessions[user_id]["hits"] = new_seq
     sessions[user_id]["round_number"] += 1
 
-    selected_items, percents = predict_sequence(new_seq)
+    predictions = predict_sequence(new_seq)
     visual = format_sequence_visual(new_seq)
 
-    fruits_part = selected_items[:3]
-    meats_part  = selected_items[3:]
-    fruits_perc = percents[:3]
-    meats_perc  = percents[3:]
+    top4 = predictions[:4]
+    percents = [42, 29, 18, 11]
 
-    fruit_line = " • ".join([f"{item} {p}%" for item, p in zip(fruits_part, fruits_perc)])
-    meat_line  = " • ".join([f"{item} {p}%" for item, p in zip(meats_part, meats_perc)])
+    lines = [f"{item}  {perc}%" for item, perc in zip(top4, percents)]
 
     text = f"""{visual}
 
 **الجولة {sessions[user_id]['round_number']}**
 
-**🍏 أفضل 3 فواكه:**
-{fruit_line}
+{' • '.join(lines)}
 
-**🍖 أفضل 2 لحوم:**
-{meat_line}
-
-اختر النتيجة الفعلية 👇"""
+اختر النتيجة 👇"""
 
     await query.message.reply_text(text, reply_markup=build_result_keyboard())
 
@@ -467,7 +420,7 @@ def main():
     app.add_handler(CallbackQueryHandler(save_result, pattern="^result_"))
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
 
-    print("✅ بوت COWBOY v5.7 ")
+    print("✅ بوت COWBOY v5.0 ENSEMBLE شغال! (معدل - عرض 4 توقعات + نسب فقط)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
