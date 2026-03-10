@@ -1,81 +1,119 @@
-import logging import psycopg2 import json from datetime import
-datetime, timedelta, timezone import os from collections import Counter,
-defaultdict from flask import Flask from threading import Thread
+import logging
+import psycopg2
+import json
+import os
+from datetime import datetime, timedelta, timezone
+from collections import Counter
+from flask import Flask
+from threading import Thread
 
-from telegram import ( Update, InlineKeyboardButton,
-InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton )
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 
-from telegram.ext import ( ApplicationBuilder, CommandHandler,
-ContextTypes, CallbackQueryHandler, MessageHandler, filters )
 
-───────────────────────── CONFIG ─────────────────────────
+# ---------------- CONFIG ----------------
 
-TOKEN = os.getenv(“BOT_TOKEN”) DATABASE_URL = os.getenv(“DATABASE_URL”)
-ADMIN_ID = int(os.getenv(“ADMIN_ID”, “0”))
+TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-───────────────────────── WEB SERVER ─────────────────────
 
-app_web = Flask(name)
+# ---------------- WEB SERVER ----------------
 
-@app_web.route(“/”) def home(): return “Bot is alive”
+app_web = Flask(__name__)
 
-def run_web(): port = int(os.environ.get(“PORT”, 10000))
-app_web.run(host=“0.0.0.0”, port=port)
+@app_web.route("/")
+def home():
+    return "Bot is alive"
 
-def keep_alive(): Thread(target=run_web, daemon=True).start()
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app_web.run(host="0.0.0.0", port=port)
 
-───────────────────────── LOGGING ────────────────────────
+def keep_alive():
+    Thread(target=run_web, daemon=True).start()
 
-logging.basicConfig( format=“%(asctime)s - %(name)s - %(levelname)s -
-%(message)s”, level=logging.INFO ) logger = logging.getLogger(name)
 
-───────────────────────── DATABASE ───────────────────────
+# ---------------- LOGGING ----------------
 
-try: conn = psycopg2.connect(DATABASE_URL, sslmode=“require”) except
-Exception as e: logger.error(f”Database connection error: {e}“) conn =
-None
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def db_execute(query, params=None, fetchone=False, commit=False): if
-conn is None: return None if fetchone else [] try: with conn.cursor() as
-cur: cur.execute(query, params or ()) if fetchone: return cur.fetchone()
-if commit: conn.commit() return True return cur.fetchall() except
-Exception as e: logger.error(f”DB error: {e}“) if commit and conn:
-conn.rollback() return None if fetchone else []
 
-───────────────────────── GAME ITEMS ─────────────────────
+# ---------------- DATABASE ----------------
 
-ITEMS = [“🍎”,“🍊”,“🥬”,“🍉”,“🐟”,“🍔”,“🍤”,“🍗”] FRUITS =
-[“🍎”,“🍊”,“🥬”,“🍉”] MEATS = [“🐟”,“🍔”,“🍤”,“🍗”] ALL_ITEMS_SET =
-set(ITEMS)
+try:
+    conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+except Exception as e:
+    logger.error(f"Database error: {e}")
+    conn = None
 
-───────────────────────── USERS ──────────────────────────
 
-def create_user(telegram_id): db_execute( “INSERT INTO users
-(telegram_id) VALUES (%s) ON CONFLICT DO NOTHING”, (telegram_id,),
-commit=True )
+def db_execute(query, params=None, fetchone=False, commit=False):
+    if conn is None:
+        return None if fetchone else []
 
-def get_user(telegram_id): return db_execute( “SELECT role,
-subscription_end FROM users WHERE telegram_id=%s”, (telegram_id,),
-fetchone=True )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, params or ())
+            if fetchone:
+                return cur.fetchone()
+            if commit:
+                conn.commit()
+                return True
+            return cur.fetchall()
 
-def check_subscription(telegram_id): row = db_execute( “SELECT
-subscription_end FROM users WHERE telegram_id=%s”, (telegram_id,),
-fetchone=True ) return row and row[0] and row[0] >
-datetime.now(timezone.utc)
+    except Exception as e:
+        logger.error(f"DB error {e}")
+        if commit:
+            conn.rollback()
+        return None if fetchone else []
 
-def get_remaining_time(telegram_id): row = db_execute( “SELECT
-subscription_end FROM users WHERE telegram_id=%s”, (telegram_id,),
-fetchone=True ) if not row or not row[0] or row[0] <=
-datetime.now(timezone.utc): return “❌ منتهي” delta = row[0] -
-datetime.now(timezone.utc) return f”✅ متبقي {delta.days} يوم”
 
-───────────────────────── CODES ──────────────────────────
+# ---------------- GAME ITEMS ----------------
 
-def activate_code(telegram_id, code):
+ITEMS = ["🍎","🍊","🥬","🍉","🐟","🍔","🍤","🍗"]
+ALL_ITEMS_SET = set(ITEMS)
+
+
+# ---------------- USERS ----------------
+
+def create_user(user_id):
+
+    db_execute(
+        "INSERT INTO users (telegram_id) VALUES (%s) ON CONFLICT DO NOTHING",
+        (user_id,),
+        commit=True
+    )
+
+
+def get_subscription(user_id):
+
+    row = db_execute(
+        "SELECT subscription_end FROM users WHERE telegram_id=%s",
+        (user_id,),
+        fetchone=True
+    )
+
+    if not row or not row[0]:
+        return "❌ لا يوجد اشتراك"
+
+    if row[0] < datetime.now(timezone.utc):
+        return "❌ منتهي"
+
+    delta = row[0] - datetime.now(timezone.utc)
+
+    return f"✅ متبقي {delta.days} يوم"
+
+
+# ---------------- CODE ACTIVATION ----------------
+
+def activate_code(user_id, code):
 
     data = db_execute(
         "SELECT days,used,max_use FROM codes WHERE code=%s",
-        (code,), fetchone=True
+        (code,),
+        fetchone=True
     )
 
     if not data:
@@ -86,122 +124,84 @@ def activate_code(telegram_id, code):
     if used >= max_use:
         return False,"❌ الكود مستنفد"
 
-    end = datetime.now(timezone.utc) + timedelta(days=days)
+    end_date = datetime.now(timezone.utc) + timedelta(days=days)
 
     db_execute(
         "UPDATE users SET subscription_end=%s WHERE telegram_id=%s",
-        (end,telegram_id),commit=True
+        (end_date,user_id),
+        commit=True
     )
 
     db_execute(
         "UPDATE codes SET used=used+1 WHERE code=%s",
-        (code,),commit=True
+        (code,),
+        commit=True
     )
 
     return True,f"✅ تم التفعيل لمدة {days} يوم"
 
-───────────────────────── KEYBOARD ───────────────────────
 
-def main_keyboard(): return ReplyKeyboardMarkup( [ [KeyboardButton(“🎯
-توقع الجولة”)], [KeyboardButton(“👤 حسابي”)], [KeyboardButton(“🎟 تفعيل
-كود”)], [KeyboardButton(“📊 إحصائيات”)] ], resize_keyboard=True )
+# ---------------- KEYBOARD ----------------
 
-def build_result_keyboard(): keyboard=[] row=[] for item in ITEMS:
-row.append(InlineKeyboardButton(item,callback_data=f”result_{item}“)) if
-len(row)==4: keyboard.append(row) row=[] if row: keyboard.append(row)
+def main_keyboard():
 
-    keyboard.append(
-        [InlineKeyboardButton("🏠 القائمة",callback_data="back_to_main")]
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("🎯 توقع الجولة")],
+            [KeyboardButton("👤 حسابي")],
+            [KeyboardButton("🎟 تفعيل كود")],
+            [KeyboardButton("📊 إحصائيات")]
+        ],
+        resize_keyboard=True
     )
 
-    return InlineKeyboardMarkup(keyboard)
 
-───────────────────────── AI ENGINE ──────────────────────
+# ---------------- PREDICTION ----------------
 
-prediction_cache={}
+def predict(sequence):
 
-def predict_sequence(sequence):
+    rows = db_execute("SELECT next_hit FROM training_data") or []
 
-    if len(sequence)==0:
-        return FRUITS[:3]+MEATS[:2],[25,25,20,15,15]
+    counter = Counter(rows)
 
-    cache_key=tuple(sequence[-8:])
-    if cache_key in prediction_cache:
-        return prediction_cache[cache_key]
+    scores = {i:counter.get(i,0) for i in ITEMS}
 
-    rows=db_execute(
-        "SELECT sequence,next_hit FROM training_data ORDER BY id DESC LIMIT 10000"
-    ) or []
+    sorted_items = sorted(scores.items(),key=lambda x:x[1],reverse=True)[:5]
 
-    scores={item:0 for item in ITEMS}
+    total = sum(scores.values()) or 1
 
-    global_count=Counter()
-    for _,n in rows:
-        global_count[n]+=1
+    result=[]
+    perc=[]
 
-    total=sum(global_count.values()) or 1
+    for item,val in sorted_items:
+        result.append(item)
+        perc.append(round(val/total*100))
 
-    for item in ITEMS:
-        scores[item]+=global_count.get(item,0)/total*50
+    return result,perc
 
-    if sequence:
-        last=sequence[-1]
 
-        after_last=Counter()
-
-        for seq_json,next_hit in rows:
-            try:
-                seq=json.loads(seq_json)
-                if seq and seq[-1]==last:
-                    after_last[next_hit]+=1
-            except:
-                pass
-
-        tot=sum(after_last.values())+len(ITEMS)
-
-        for item in ITEMS:
-            scores[item]+=((after_last.get(item,0)+1)/tot)*200
-
-    sorted_fruits=sorted(FRUITS,key=lambda x:scores[x],reverse=True)[:3]
-    sorted_meats=sorted(MEATS,key=lambda x:scores[x],reverse=True)[:2]
-
-    selected=sorted_fruits+sorted_meats
-
-    raw=[scores[x] for x in selected]
-    s=sum(raw) or 1
-
-    perc=[round(i/s*100) for i in raw]
-
-    prediction_cache[cache_key]=(selected,perc)
-
-    return selected,perc
-
-───────────────────────── HANDLERS ───────────────────────
+# ---------------- HANDLERS ----------------
 
 async def start(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
-    user_id=update.effective_user.id
+    user_id = update.effective_user.id
+
     create_user(user_id)
 
     await update.message.reply_text(
-        f"🤖 Cowboy Prediction Bot\n\nاشتراكك: {get_remaining_time(user_id)}",
+        f"🤖 Cowboy Bot\n\nاشتراكك: {get_subscription(user_id)}",
         reply_markup=main_keyboard()
     )
 
-async def show_profile(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
-    user_id=update.effective_user.id
-    user=get_user(user_id)
+async def profile(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
-    role=user[0] if user else "مستخدم"
+    user_id = update.effective_user.id
 
-    text=f"""
+    await update.message.reply_text(
+        f"👤 حسابك\n\nID: {user_id}\nالاشتراك: {get_subscription(user_id)}"
+    )
 
-👤 حسابك
-
-ID: {user_id} الرتبة: {role} الاشتراك: {get_remaining_time(user_id)} ““”
-
-    await update.message.reply_text(text)
 
 async def ask_code(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
@@ -209,90 +209,84 @@ async def ask_code(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("🎟 أرسل كود التفعيل")
 
-async def
-show_statistics(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
-    rows=db_execute("SELECT next_hit FROM training_data") or []
+async def stats(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
-    counter=Counter([r[0] for r in rows])
+    rows = db_execute("SELECT next_hit FROM training_data") or []
+
+    counter = Counter(rows)
+
+    total = sum(counter.values())
 
     text="📊 الإحصائيات\n\n"
 
-    total=sum(counter.values())
-
     for item in ITEMS:
-        c=counter.get(item,0)
-        p=round(c/total*100) if total else 0
-        text+=f"{item} : {p}%\n"
+
+        count = counter.get(item,0)
+
+        percent = round(count/total*100) if total else 0
+
+        text+=f"{item} : {percent}%\n"
 
     await update.message.reply_text(text)
 
+
 async def handle_text(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
-    user_id=update.effective_user.id
-    text=update.message.text.strip()
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
 
     if context.user_data.get("wait_code"):
 
         context.user_data["wait_code"]=False
 
-        success,msg=activate_code(user_id,text)
+        ok,msg = activate_code(user_id,text)
 
         await update.message.reply_text(msg)
+
         return
 
-    sequence=text.split()
+    sequence = text.split()
 
     if not set(sequence).issubset(ALL_ITEMS_SET):
 
         await update.message.reply_text(
-            "❌ أرسل رموز اللعبة فقط\nمثال:\n🍎 🍊 🥬 🍉 🐟 🍔"
+            "❌ أرسل الرموز فقط\n\nمثال\n🍎 🍊 🥬 🍉 🐟 🍔"
         )
+
         return
 
-    pred,perc=predict_sequence(sequence)
+    pred,perc = predict(sequence)
 
     msg="🤖 التوقع\n\n"
 
     for i,p in zip(pred,perc):
+
         msg+=f"{i} {p}%\n"
 
-    await update.message.reply_text(
-        msg,
-        reply_markup=build_result_keyboard()
-    )
+    await update.message.reply_text(msg)
 
-async def back_to_main(update:Update,context:ContextTypes.DEFAULT_TYPE):
 
-    query=update.callback_query
-    await query.answer()
-
-    await query.message.reply_text(
-        "🏠 القائمة الرئيسية",
-        reply_markup=main_keyboard()
-    )
-
-───────────────────────── MAIN ───────────────────────────
+# ---------------- MAIN ----------------
 
 def main():
 
     keep_alive()
 
-    app=ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start",start))
 
-    app.add_handler(MessageHandler(filters.Regex("^(🎯 توقع الجولة)$"),handle_text))
-    app.add_handler(MessageHandler(filters.Regex("^(👤 حسابي)$"),show_profile))
+    app.add_handler(MessageHandler(filters.Regex("^(👤 حسابي)$"),profile))
     app.add_handler(MessageHandler(filters.Regex("^(🎟 تفعيل كود)$"),ask_code))
-    app.add_handler(MessageHandler(filters.Regex("^(📊 إحصائيات)$"),show_statistics))
+    app.add_handler(MessageHandler(filters.Regex("^(📊 إحصائيات)$"),stats))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,handle_text))
 
-    app.add_handler(CallbackQueryHandler(back_to_main,pattern="back_to_main"))
-
-    print("Bot Started")
+    print("Bot started")
 
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if name==“main”: main()
+
+if __name__=="__main__":
+    main()
