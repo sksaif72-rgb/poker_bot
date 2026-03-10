@@ -48,8 +48,8 @@ conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 # GAME ITEMS
 # ────────────────────────────────────────────────
 ITEMS = ["🍎", "🍊", "🥬", "🍉", "🐟", "🍔", "🍤", "🍗"]
-FRUITS = ["🍉", "🍎", "🍊", "🥬"]   # 3 فواكه فقط
-MEATS  = ["🐟", "🍔", "🍤", "🍗"]   # 1 لحميات فقط
+FRUITS = ["🍎", "🍊", "🥬", "🍉"]
+MEATS  = ["🐟", "🍔", "🍤", "🍗"]
 
 # ────────────────────────────────────────────────
 # SESSIONS + CACHE
@@ -130,13 +130,14 @@ def format_sequence_visual(sequence):
     return f"🎮 **التسلسل الحالي**\n{' '.join(sequence)}"
 
 # ────────────────────────────────────────────────
-# التنبؤ المتطور (Ensemble AI) → 3 فواكه + 1 لحميات + نسب حقيقية 100%
+# التنبؤ المتطور → 3 فواكه + 3 لحوم + نسب حقيقية 100%
 # ────────────────────────────────────────────────
 def predict_sequence(sequence):
-    # Default إذا ما فيه تسلسل بعد
     if len(sequence) < 1:
-        selected = FRUITS[:3] + [MEATS[0]]
-        percents = [30, 25, 25, 20]
+        top_fruits = FRUITS[:3]
+        top_meats  = MEATS[:3]
+        selected = top_fruits + top_meats
+        percents = [20, 18, 17, 16, 15, 14]  # افتراضي
         prediction_cache[()] = (selected, percents)
         return selected, percents
 
@@ -185,20 +186,25 @@ def predict_sequence(sequence):
     for item in ITEMS:
         scores[item] += (global_count[item] / total_g) * 45
 
-    # ───── اختيار بالضبط 3 فواكه + 1 لحميات ─────
-    top3_fruits = sorted(FRUITS, key=lambda x: scores[x], reverse=True)[:3]
-    top1_meat   = max(MEATS, key=lambda x: scores[x])
+    # ───── اختيار 3 فواكه + 3 لحوم ─────
+    sorted_fruits = sorted(FRUITS, key=lambda x: scores[x], reverse=True)
+    sorted_meats  = sorted(MEATS,  key=lambda x: scores[x], reverse=True)
 
-    selected_items = top3_fruits + [top1_meat]
+    top3_fruits = sorted_fruits[:3]
+    top3_meats  = sorted_meats[:3]
 
-    # ───── حساب نسب مئوية حقيقية (normalization فقط على الـ 4 المختارين) ─────
+    selected_items = top3_fruits + top3_meats
+
+    # ───── حساب نسب مئوية حقيقية فقط على الـ6 المختارين ─────
     selected_scores = [scores[item] for item in selected_items]
     total_sel = sum(selected_scores) or 1
     percents = [round((s / total_sel) * 100) for s in selected_scores]
 
-    # تصحيح المجموع ليكون دائماً 100%
-    diff = 100 - sum(percents)
+    # تصحيح ليكون المجموع 100% بالضبط
+    current_sum = sum(percents)
+    diff = 100 - current_sum
     if diff != 0:
+        # نضيف/نطرح الفرق من أعلى قيمة
         max_idx = percents.index(max(percents))
         percents[max_idx] += diff
 
@@ -206,14 +212,14 @@ def predict_sequence(sequence):
     return selected_items, percents
 
 # ────────────────────────────────────────────────
-# باقي الدوال (بدون تغيير إلا في عرض التوقع)
+# باقي الدوال (مع تعديل بسيط في عرض التوقع)
 # ────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     create_user(user_id)
     remaining = get_remaining_time(user_id)
     await update.message.reply_text(
-        f"""🎯 بوت COWBOY احترافي v5.1 ENSEMBLE (3 فواكه + 1 لحم)
+        f"""🎯 بوت COWBOY v5.2 ENSEMBLE (3 فواكه + 3 لحوم)
 
 **حالة اشتراكك:** {remaining}
 
@@ -347,18 +353,30 @@ async def back_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_prediction(message, user_id):
     sequence = sessions[user_id]["hits"]
-    selected_items, percents = predict_sequence(sequence)   # ← التعديل الجديد
+    selected_items, percents = predict_sequence(sequence)
     visual = format_sequence_visual(sequence)
 
-    lines = [f"{item}  {perc}%" for item, perc in zip(selected_items, percents)]
+    # تقسيم لعرض أوضح
+    fruits_part = selected_items[:3]
+    meats_part  = selected_items[3:]
+    fruits_perc = percents[:3]
+    meats_perc  = percents[3:]
+
+    lines = []
+    for i, item in enumerate(fruits_part):
+        lines.append(f"🍏 {item} → {fruits_perc[i]}%")
+    lines.append("──────────────")
+    for i, item in enumerate(meats_part):
+        lines.append(f"🍖 {item} → {meats_perc[i]}%")
 
     text = f"""{visual}
 
-**الجولة {sessions[user_id]['round_number']}** (3 فواكه + 1 لحم)
+**الجولة {sessions[user_id]['round_number']}**  
+(أقوى 3 فواكه + أقوى 3 لحوم)
 
-{' • '.join(lines)}
+{' | '.join([f"{item} {p}%" for item,p in zip(selected_items, percents)])}
 
-اختر النتيجة 👇"""
+اختر النتيجة الفعلية 👇"""
 
     await message.reply_text(text, reply_markup=build_result_keyboard())
 
@@ -380,18 +398,29 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sessions[user_id]["hits"] = new_seq
     sessions[user_id]["round_number"] += 1
 
-    selected_items, percents = predict_sequence(new_seq)   # ← التعديل الجديد
+    selected_items, percents = predict_sequence(new_seq)
     visual = format_sequence_visual(new_seq)
 
-    lines = [f"{item}  {perc}%" for item, perc in zip(selected_items, percents)]
+    fruits_part = selected_items[:3]
+    meats_part  = selected_items[3:]
+    fruits_perc = percents[:3]
+    meats_perc  = percents[3:]
+
+    lines = []
+    for i, item in enumerate(fruits_part):
+        lines.append(f"🍏 {item} → {fruits_perc[i]}%")
+    lines.append("──────────────")
+    for i, item in enumerate(meats_part):
+        lines.append(f"🍖 {item} → {meats_perc[i]}%")
 
     text = f"""{visual}
 
-**الجولة {sessions[user_id]['round_number']}** (3 فواكه + 1 لحم)
+**الجولة {sessions[user_id]['round_number']}**  
+(أقوى 3 فواكه + أقوى 3 لحوم)
 
-{' • '.join(lines)}
+{' | '.join([f"{item} {p}%" for item,p in zip(selected_items, percents)])}
 
-اختر النتيجة 👇"""
+اختر النتيجة الفعلية 👇"""
 
     await query.message.reply_text(text, reply_markup=build_result_keyboard())
 
@@ -432,7 +461,7 @@ def main():
     app.add_handler(CallbackQueryHandler(save_result, pattern="^result_"))
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
 
-    print("✅ بوت COWBOY v5.1 ENSEMBLE شغال! (3 فواكه + 1 لحم + نسب مئوية حقيقية 100%)")
+    print("✅ بوت COWBOY v5.2 ENSEMBLE شغال! (3 فواكه + 3 لحوم + نسب حقيقية 100%)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
