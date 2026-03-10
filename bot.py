@@ -48,6 +48,8 @@ conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 # GAME ITEMS
 # ────────────────────────────────────────────────
 ITEMS = ["🍎", "🍊", "🥬", "🍉", "🐟", "🍔", "🍤", "🍗"]
+FRUITS = ["🍉", "🍎", "🍊", "🥬"]   # 3 فواكه فقط
+MEATS  = ["🐟", "🍔", "🍤", "🍗"]   # 1 لحميات فقط
 
 # ────────────────────────────────────────────────
 # SESSIONS + CACHE
@@ -128,22 +130,26 @@ def format_sequence_visual(sequence):
     return f"🎮 **التسلسل الحالي**\n{' '.join(sequence)}"
 
 # ────────────────────────────────────────────────
-# التنبؤ المتطور (Ensemble AI)
+# التنبؤ المتطور (Ensemble AI) → 3 فواكه + 1 لحميات + نسب حقيقية 100%
 # ────────────────────────────────────────────────
 def predict_sequence(sequence):
+    # Default إذا ما فيه تسلسل بعد
     if len(sequence) < 1:
-        return ITEMS[:3]
-    
+        selected = FRUITS[:3] + [MEATS[0]]
+        percents = [30, 25, 25, 20]
+        prediction_cache[()] = (selected, percents)
+        return selected, percents
+
     seq_tuple = tuple(sequence)
     if seq_tuple in prediction_cache:
         return prediction_cache[seq_tuple]
-    
+
     rows = db_execute(
         "SELECT sequence, next_hit FROM training_data ORDER BY id DESC LIMIT 1000"
     )
-    
+
     scores = {item: 0.0 for item in ITEMS}
-    
+
     # Markov Chains (1,2,3)
     for order in [1, 2, 3]:
         trans = defaultdict(Counter)
@@ -179,22 +185,35 @@ def predict_sequence(sequence):
     for item in ITEMS:
         scores[item] += (global_count[item] / total_g) * 45
 
-    # ترتيب النتيجة
-    sorted_preds = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    top_5 = [item[0] for item in sorted_preds[:5]]
-    
-    prediction_cache[seq_tuple] = top_5
-    return top_5
+    # ───── اختيار بالضبط 3 فواكه + 1 لحميات ─────
+    top3_fruits = sorted(FRUITS, key=lambda x: scores[x], reverse=True)[:3]
+    top1_meat   = max(MEATS, key=lambda x: scores[x])
+
+    selected_items = top3_fruits + [top1_meat]
+
+    # ───── حساب نسب مئوية حقيقية (normalization فقط على الـ 4 المختارين) ─────
+    selected_scores = [scores[item] for item in selected_items]
+    total_sel = sum(selected_scores) or 1
+    percents = [round((s / total_sel) * 100) for s in selected_scores]
+
+    # تصحيح المجموع ليكون دائماً 100%
+    diff = 100 - sum(percents)
+    if diff != 0:
+        max_idx = percents.index(max(percents))
+        percents[max_idx] += diff
+
+    prediction_cache[seq_tuple] = (selected_items, percents)
+    return selected_items, percents
 
 # ────────────────────────────────────────────────
-# باقي الدوال
+# باقي الدوال (بدون تغيير إلا في عرض التوقع)
 # ────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     create_user(user_id)
     remaining = get_remaining_time(user_id)
     await update.message.reply_text(
-        f"""🎯 بوت COWBOY احترافي v5.0 ENSEMBLE
+        f"""🎯 بوت COWBOY احترافي v5.1 ENSEMBLE (3 فواكه + 1 لحم)
 
 **حالة اشتراكك:** {remaining}
 
@@ -328,18 +347,14 @@ async def back_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_prediction(message, user_id):
     sequence = sessions[user_id]["hits"]
-    predictions = predict_sequence(sequence)
+    selected_items, percents = predict_sequence(sequence)   # ← التعديل الجديد
     visual = format_sequence_visual(sequence)
 
-    # أعلى 4 فقط + نسب تقريبية
-    top4 = predictions[:4]
-    percents = [42, 29, 18, 11]   # يمكنك تغيير التوزيع حسب رغبتك (المجموع 100)
-
-    lines = [f"{item}  {perc}%" for item, perc in zip(top4, percents)]
+    lines = [f"{item}  {perc}%" for item, perc in zip(selected_items, percents)]
 
     text = f"""{visual}
 
-**الجولة {sessions[user_id]['round_number']}**
+**الجولة {sessions[user_id]['round_number']}** (3 فواكه + 1 لحم)
 
 {' • '.join(lines)}
 
@@ -365,17 +380,14 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sessions[user_id]["hits"] = new_seq
     sessions[user_id]["round_number"] += 1
 
-    predictions = predict_sequence(new_seq)
+    selected_items, percents = predict_sequence(new_seq)   # ← التعديل الجديد
     visual = format_sequence_visual(new_seq)
 
-    top4 = predictions[:4]
-    percents = [42, 29, 18, 11]
-
-    lines = [f"{item}  {perc}%" for item, perc in zip(top4, percents)]
+    lines = [f"{item}  {perc}%" for item, perc in zip(selected_items, percents)]
 
     text = f"""{visual}
 
-**الجولة {sessions[user_id]['round_number']}**
+**الجولة {sessions[user_id]['round_number']}** (3 فواكه + 1 لحم)
 
 {' • '.join(lines)}
 
@@ -420,7 +432,7 @@ def main():
     app.add_handler(CallbackQueryHandler(save_result, pattern="^result_"))
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
 
-    print("✅ بوت COWBOY v5.0 ENSEMBLE شغال! (معدل - عرض 4 توقعات + نسب فقط)")
+    print("✅ بوت COWBOY v5.1 ENSEMBLE شغال! (3 فواكه + 1 لحم + نسب مئوية حقيقية 100%)")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
