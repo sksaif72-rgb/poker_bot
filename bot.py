@@ -130,7 +130,7 @@ def format_sequence_visual(sequence):
     return f"🎰 **التسلسل الحالي** (آخر 6 مرئية)\n{'  •  '.join(sequence[-6:])}"
 
 # ────────────────────────────────────────────────
-# PREDICTION ENGINE v5.7 – تركيز على 1 + 4 + 6 فقط
+# PREDICTION ENGINE
 # ────────────────────────────────────────────────
 def predict_sequence(sequence):
     if len(sequence) < 1:
@@ -148,7 +148,7 @@ def predict_sequence(sequence):
 
     scores = {item: 0.0 for item in ITEMS}
 
-    # ─── Markov على النوافذ المحددة فقط (1 + 4 + 6) ───
+    # Markov على النوافذ المحددة فقط (1 + 4 + 6)
     for order in [1, 4, 6]:
         if len(sequence) < order:
             continue
@@ -164,22 +164,20 @@ def predict_sequence(sequence):
             except:
                 continue
 
-        # أوزان مقترحة (يمكن تعديلها)
         weight_map = {1: 340, 4: 190, 6: 95}
         weight = weight_map.get(order, 100)
 
         key = tuple(sequence[-order:])
         if key in trans:
-            total = sum(trans[key].values()) + len(ITEMS) * 6   # smoothing أقوى
+            total = sum(trans[key].values()) + len(ITEMS) * 6
             for item in ITEMS:
                 count = trans[key].get(item, 0) + 6
                 scores[item] += (count / total) * weight
         else:
-            # fallback خفيف
             for item in ITEMS:
                 scores[item] += 10.0
 
-    # ─── تعزيز إضافي للانتقال من آخر ضربة (دائمًا الأهم) ───
+    # تعزيز إضافي للانتقال من آخر ضربة
     if sequence:
         last = sequence[-1]
         trans_last = Counter()
@@ -196,23 +194,22 @@ def predict_sequence(sequence):
             for item in ITEMS:
                 scores[item] += ((trans_last.get(item, 0) + 5) / tot) * 380
 
-    # ─── recency boost خفيف لآخر 3 عناصر ───
+    # recency boost خفيف لآخر 3
     if len(sequence) >= 3:
         for i, item in enumerate(sequence[-3:]):
-            pos_weight = (3 - i) / 3 * 1.6   # الأحدث أقوى
+            pos_weight = (3 - i) / 3 * 1.6
             scores[item] += pos_weight * 120
 
-    # ─── اختيار 3 فواكه + 2 لحوم ───
+    # اختيار 3 فواكه + 2 لحوم
     sorted_fruits = sorted(FRUITS, key=lambda x: scores[x], reverse=True)[:3]
     sorted_meats  = sorted(MEATS,  key=lambda x: scores[x], reverse=True)[:2]
     selected_items = sorted_fruits + sorted_meats
 
-    # ─── نسب مئوية ديناميكية ───
+    # نسب مئوية
     selected_scores = [max(scores[item], 1) for item in selected_items]
     total_sel = sum(selected_scores) or 1
     percents = [round((s / total_sel) * 100) for s in selected_scores]
 
-    # تصحيح لـ 100%
     diff = 100 - sum(percents)
     if diff != 0:
         max_idx = percents.index(max(percents))
@@ -222,8 +219,147 @@ def predict_sequence(sequence):
     return selected_items, percents
 
 # ────────────────────────────────────────────────
-# عرض النتيجة
+# HANDLERS
 # ────────────────────────────────────────────────
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    create_user(user_id)
+    remaining = get_remaining_time(user_id)
+    await update.message.reply_text(
+        f"""🎯 بوت COWBOY v5.7 – تركيز على آخر 1 + 4 + 6 ضربات
+
+**حالة اشتراكك:** {remaining}
+
+اختر من الأزرار أدناه 👇""",
+        reply_markup=main_keyboard()
+    )
+
+async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    role = user[0] if user and user[0] else "👤 مستخدم عادي"
+    remaining = get_remaining_time(user_id)
+    results = db_execute("SELECT COUNT(*) FROM user_results WHERE telegram_id = %s", (user_id,), fetchone=True)[0] or 0
+
+    text = f"""👤 **حسابك**
+
+🆔 ID: <code>{user_id}</code>
+👑 الرتبة: {role}
+📊 نتائجك المسجلة: {results}
+💎 الاشتراك: {remaining}
+
+🚀 جاهز للتوقع؟"""
+    await update.message.reply_text(text, parse_mode="HTML")
+
+async def ask_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔑 أرسل كود الاشتراك:")
+    sessions[update.effective_user.id] = {"mode": "code"}
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+
+    if user_id == ADMIN_ID and text.startswith("/createcode "):
+        try:
+            _, code, days, maxu = text.split()
+            db_execute("INSERT INTO codes (code, days, max_use) VALUES (%s,%s,%s)", (code, int(days), int(maxu)), commit=True)
+            await update.message.reply_text(f"✅ كود جديد: {code}")
+        except:
+            await update.message.reply_text("❌ الاستخدام: /createcode الكود الأيام الحد")
+        return
+
+    if user_id in sessions and sessions[user_id].get("mode") == "code":
+        success, msg = activate_code(user_id, text)
+        await update.message.reply_text(msg)
+        if success:
+            sessions.pop(user_id, None)
+            await update.message.reply_text(get_remaining_time(user_id), reply_markup=main_keyboard())
+
+async def guess_warning(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not check_subscription(user_id):
+        await update.message.reply_text("❌ اشتراكك منتهي")
+        return
+
+    example = "مثال: 🍎 🍊 🥬 🍉 🐟 🍔 🍤"
+
+    keyboard = [
+        [InlineKeyboardButton("📖 التالي (فهمت)", callback_data="tutorial_next")],
+        [InlineKeyboardButton("🚀 ابدأ الجولة الآن", callback_data="start_guess")]
+    ]
+
+    await update.message.reply_text(
+        f"""⚠️ **اختر التسلسل من يسار إلى يمين**\n
+{example}
+
+**حالة اشتراكك:** {get_remaining_time(user_id)}
+
+جاهز؟""",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def tutorial_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "✅ تم فهم التعليمات!\n\nاضغط لبدء الجولة",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚀 ابدأ الجولة الآن", callback_data="start_guess")]])
+    )
+
+async def start_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    sessions[user_id] = {"mode": "guess", "hits": [], "round_number": 1}
+    await ask_hit(query.message, user_id)
+
+async def ask_hit(message, user_id):
+    step = len(sessions[user_id]["hits"]) + 1
+    keyboard = []
+    row = []
+    for item in ITEMS:
+        row.append(InlineKeyboardButton(item, callback_data=f"hit_{item}"))
+        if len(row) == 4:
+            keyboard.append(row)
+            row = []
+    if row: keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_hit")])
+
+    await message.reply_text(
+        f"**الجولة {sessions[user_id]['round_number']}** 🎲\nاختر الضربة رقم {step}",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def hit_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    fruit = query.data.split("_", 1)[1]
+    kb = [
+        [InlineKeyboardButton("✅ تأكيد", callback_data=f"confirm_hit_{fruit}")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_hit")]
+    ]
+    await query.edit_message_text(f"اخترت {fruit}\nمتأكد؟", reply_markup=InlineKeyboardMarkup(kb))
+
+async def confirm_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    fruit = query.data.replace("confirm_hit_", "")
+    sessions[user_id]["hits"].append(fruit)
+    if len(sessions[user_id]["hits"]) < 6:
+        await ask_hit(query.message, user_id)
+    else:
+        await show_prediction(query.message, user_id)
+
+async def back_hit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    if sessions[user_id]["hits"]:
+        sessions[user_id]["hits"].pop()
+    await ask_hit(query.message, user_id)
+
 async def show_prediction(message, user_id):
     sequence = sessions[user_id]["hits"]
     selected_items, percents = predict_sequence(sequence)
@@ -294,29 +430,20 @@ async def save_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.message.reply_text(text, reply_markup=build_result_keyboard())
 
-# ────────────────────────────────────────────────
-# باقي الدوال (start, profile, code, guess_warning, tutorial, start_guess, ask_hit, ...)
-# ────────────────────────────────────────────────
+async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    sessions.pop(query.from_user.id, None)
+    prediction_cache.clear()
+    await query.message.reply_text("🏠 العودة للقائمة", reply_markup=main_keyboard())
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    create_user(user_id)
-    remaining = get_remaining_time(user_id)
-    await update.message.reply_text(
-        f"""🎯 بوت COWBOY v5.7 – تركيز على آخر 1 + 4 + 6 ضربات
-
-**حالة اشتراكك:** {remaining}
-
-اختر من الأزرار أدناه 👇""",
-        reply_markup=main_keyboard()
-    )
-
-# ────────────────────────────────────────────────
-# باقي الـ handlers (كما في النسخ السابقة)
-# ────────────────────────────────────────────────
-
-# ... (انسخ باقي الدوال من النسخة السابقة: show_profile, ask_code, handle_text, guess_warning,
-# tutorial_next, start_guess, ask_hit, hit_selected, confirm_hit, back_hit, back_to_main, show_statistics)
+async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    total_data = db_execute("SELECT COUNT(*) FROM training_data", fetchone=True)[0]
+    active = db_execute("SELECT COUNT(*) FROM users WHERE subscription_end > %s", (datetime.now(timezone.utc),), fetchone=True)[0]
+    await update.message.reply_text(f"""📊 إحصائيات
+البيانات التدريبية: {total_data}
+المشتركين النشطين: {active}
+اشتراكك: {get_remaining_time(update.effective_user.id)}""")
 
 # ────────────────────────────────────────────────
 # MAIN
